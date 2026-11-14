@@ -4,8 +4,9 @@ package com.pindou.app.core.editor
  * 图纸编辑引擎：多页格子数据 + 逐页锁定标记 + 撤销/重做命令栈。纯 Kotlin，可脱离 Android 单测。
  *
  * - cells 每格为色卡索引（-1 = 空格）；锁定格不受绘制/擦除影响；锁定按页独立。
- * - 页操作：[addPage]（可复制当前页）/ [removePage] / [setPage] / [resize]（居中保留内容）。
- * - 撤销栈两类条目：普通笔触只记格子变更；结构操作（增删页/改尺寸）整帧快照。
+ * - 页操作：[addPage]（可复制当前页）/ [removePage] / [setPage] / [resize]（居中保留内容）/
+ *   [crop]（按矩形裁掉画布边缘）。
+ * - 撤销栈两类条目：普通笔触只记格子变更；结构操作（增删页/改尺寸/裁剪）整帧快照。
  *   快照条目较占内存（全页拷贝），历史栈上限 50 步兜底，常规 1~5 页图纸占用可控。
  */
 class EditorEngine(
@@ -151,6 +152,39 @@ class EditorEngine(
     }
 
     /**
+     * 形状工具：两点确定直线/矩形/椭圆，按 [symmetry] 同时画镜像形状。
+     * 整次形状作为一条撤销记录；锁定格跳过，空格也可以被形状覆盖。
+     */
+    fun drawShape(
+        kind: ShapeTool,
+        start: Int,
+        end: Int,
+        color: Int,
+        filled: Boolean,
+        symmetry: SymmetryMode = SymmetryMode.NONE,
+    ): Boolean {
+        if (start !in cells.indices || end !in cells.indices) return false
+        val w = width
+        val h = height
+        val starts = symmetry.centers(start, w, h)
+        val ends = symmetry.centers(end, w, h)
+        val session = startStroke()
+        for (i in 0 until minOf(starts.size, ends.size)) {
+            val s = starts[i]
+            val e = ends[i]
+            val x0 = s % w
+            val y0 = s / w
+            val x1 = e % w
+            val y1 = e / w
+            for (idx in kind.indices(x0, y0, x1, y1, w, h, filled)) {
+                session.setCell(idx, color)
+            }
+        }
+        endStroke(session)
+        return session.changes.isNotEmpty()
+    }
+
+    /**
      * 把当前页所有 [target] 色格替换成 [replacement]（锁定格跳过）。
      * 整次替换作为一条撤销记录；用于长按「同色替换」。
      */
@@ -205,6 +239,19 @@ class EditorEngine(
         return count
     }
 
+    /**
+     * 点按擦除：把 [index] 所在 4 连通同色区域清成空格。
+     * 锁定格保留原色，但不会截断区域，整次擦除只入一条撤销记录。
+     */
+    fun eraseRegion(index: Int): Boolean {
+        if (index !in cells.indices) return false
+        if (locked[index]) return false
+        // 空格区域不需要擦除；floodFill 对 origin == newColor 已经会返回 false，
+        // 这里提前判断避免为整片空白创建一次无效遍历。
+        if (cells[index] < 0) return false
+        return floodFill(index, -1)
+    }
+
     /** 锁定/解锁当前页单格（不入撤销栈） */
     fun setLocked(index: Int, value: Boolean): Boolean {
         val locks = locked
@@ -230,7 +277,7 @@ class EditorEngine(
         _pages.add(newCells)
         _locks.add(newLocks)
         pageIndex = targetIndex
-        pushSnapshot(beforePages, beforeLocks, beforeIndex, targetIndex)
+        pushSnapshot(width, height, beforePages, beforeLocks, beforeIndex, targetIndex)
     }
 
     /** 删除一页；至少保留一页 */
@@ -242,7 +289,7 @@ class EditorEngine(
         _pages.removeAt(index)
         _locks.removeAt(index)
         pageIndex = beforeIndex.coerceAtMost(_pages.size - 1)
-        pushSnapshot(beforePages, beforeLocks, beforeIndex, pageIndex)
+        pushSnapshot(width, height, beforePages, beforeLocks, beforeIndex, pageIndex)
         return true
     }
 
@@ -251,7 +298,7 @@ class EditorEngine(
      * 所有页一起变（多页图纸必须同尺寸，导出/施工按统一网格处理）。
      */
     fun resize(newWidth: Int, newHeight: Int) {
-        require(newWidth in 1..200 && newHeight in 1..200) { "尺寸超出范围" }
+        require(newWidth in 1..500 && newHeight in 1..500) { "尺寸超出范围" }
         if (newWidth == width && newHeight == height) return
         val beforePages = snapshotPages()
         val beforeLocks = snapshotLocks()
@@ -291,7 +338,161 @@ class EditorEngine(
         width = newWidth
         height = newHeight
         pageIndex = beforeIndex.coerceAtMost(_pages.size - 1)
-        pushSnapshot(beforePages, beforeLocks, beforeIndex, pageIndex)
+        pushSnapshot(oldWidth, oldHeight, beforePages, beforeLocks, beforeIndex, pageIndex)
+    }
+
+    /**
+     * 裁剪画布：从每页的 (left, top) 开始保留 newWidth × newHeight。
+     *
+     * 与 [resize] 的“居中保留”不同，这里不做补边，常用于去掉图纸四周
+     * 多余的空白。超出原图范围直接拒绝，锁定标记同步裁剪。
+     * 所有页必须保持同尺寸；整次裁剪作为一条快照撤销。
+     */
+    fun crop(left: Int, top: Int, newWidth: Int, newHeight: Int): Boolean {
+        require(newWidth in 1..500 && newHeight in 1..500) { "尺寸超出范围" }
+        require(left >= 0 && top >= 0) { "裁剪起点不能为负" }
+        require(left + newWidth <= width && top + newHeight <= height) { "裁剪范围超出图纸" }
+        if (left == 0 && top == 0 && newWidth == width && newHeight == height) return false
+        val oldWidth = width
+        val oldHeight = height
+        val beforePages = snapshotPages()
+        val beforeLocks = snapshotLocks()
+        val beforeIndex = pageIndex
+        val newPages = _pages.map { page ->
+            IntArray(newWidth * newHeight).also { out ->
+                for (y in 0 until newHeight) {
+                    val srcRow = (top + y) * oldWidth + left
+                    val dstRow = y * newWidth
+                    page.copyInto(out, dstRow, srcRow, srcRow + newWidth)
+                }
+            }
+        }
+        val newLocks = _locks.map { lock ->
+            BooleanArray(newWidth * newHeight).also { out ->
+                for (y in 0 until newHeight) {
+                    val srcRow = (top + y) * oldWidth + left
+                    val dstRow = y * newWidth
+                    lock.copyInto(out, dstRow, srcRow, srcRow + newWidth)
+                }
+            }
+        }
+        _pages.clear(); _pages.addAll(newPages)
+        _locks.clear(); _locks.addAll(newLocks)
+        width = newWidth
+        height = newHeight
+        pageIndex = beforeIndex.coerceAtMost(_pages.size - 1)
+        pushSnapshot(oldWidth, oldHeight, beforePages, beforeLocks, beforeIndex, pageIndex)
+        return true
+    }
+
+    /** 水平翻转当前所有页（左右镜像），可撤销。 */
+    fun flipHorizontal(): Boolean {
+        if (width < 2) return false
+        val oldWidth = width
+        val oldHeight = height
+        val beforePages = snapshotPages()
+        val beforeLocks = snapshotLocks()
+        val beforeIndex = pageIndex
+        val newPages = _pages.map { page ->
+            IntArray(page.size) { i ->
+                val x = i % oldWidth
+                val y = i / oldWidth
+                page[y * oldWidth + (oldWidth - 1 - x)]
+            }
+        }
+        val newLocks = _locks.map { lock ->
+            BooleanArray(lock.size) { i ->
+                val x = i % oldWidth
+                val y = i / oldWidth
+                lock[y * oldWidth + (oldWidth - 1 - x)]
+            }
+        }
+        _pages.clear(); _pages.addAll(newPages)
+        _locks.clear(); _locks.addAll(newLocks)
+        pageIndex = beforeIndex.coerceIn(0, _pages.size - 1)
+        pushSnapshot(oldWidth, oldHeight, beforePages, beforeLocks, beforeIndex, pageIndex)
+        return true
+    }
+
+    /** 垂直翻转当前所有页（上下镜像），可撤销。 */
+    fun flipVertical(): Boolean {
+        if (height < 2) return false
+        val oldWidth = width
+        val oldHeight = height
+        val beforePages = snapshotPages()
+        val beforeLocks = snapshotLocks()
+        val beforeIndex = pageIndex
+        val newPages = _pages.map { page ->
+            IntArray(page.size) { i ->
+                val x = i % oldWidth
+                val y = i / oldWidth
+                page[(oldHeight - 1 - y) * oldWidth + x]
+            }
+        }
+        val newLocks = _locks.map { lock ->
+            BooleanArray(lock.size) { i ->
+                val x = i % oldWidth
+                val y = i / oldWidth
+                lock[(oldHeight - 1 - y) * oldWidth + x]
+            }
+        }
+        _pages.clear(); _pages.addAll(newPages)
+        _locks.clear(); _locks.addAll(newLocks)
+        pageIndex = beforeIndex.coerceIn(0, _pages.size - 1)
+        pushSnapshot(oldWidth, oldHeight, beforePages, beforeLocks, beforeIndex, pageIndex)
+        return true
+    }
+
+    /**
+     * 旋转 90°。宽高互换，所有页和锁定标记一起转；整次旋转作为一条快照撤销。
+     * 顺时针：newX = h-1-y, newY = x；逆时针反向。
+     */
+    fun rotate90(clockwise: Boolean): Boolean {
+        if (width <= 1 && height <= 1) return false
+        val oldWidth = width
+        val oldHeight = height
+        val newWidth = oldHeight
+        val newHeight = oldWidth
+        val beforePages = snapshotPages()
+        val beforeLocks = snapshotLocks()
+        val beforeIndex = pageIndex
+        val newPages = _pages.map { page ->
+            IntArray(newWidth * newHeight) { i ->
+                val nx = i % newWidth
+                val ny = i / newWidth
+                if (clockwise) {
+                    val sx = ny
+                    val sy = oldHeight - 1 - nx
+                    page[sy * oldWidth + sx]
+                } else {
+                    val sx = oldWidth - 1 - ny
+                    val sy = nx
+                    page[sy * oldWidth + sx]
+                }
+            }
+        }
+        val newLocks = _locks.map { lock ->
+            BooleanArray(newWidth * newHeight) { i ->
+                val nx = i % newWidth
+                val ny = i / newWidth
+                if (clockwise) {
+                    val sx = ny
+                    val sy = oldHeight - 1 - nx
+                    lock[sy * oldWidth + sx]
+                } else {
+                    val sx = oldWidth - 1 - ny
+                    val sy = nx
+                    lock[sy * oldWidth + sx]
+                }
+            }
+        }
+        _pages.clear(); _pages.addAll(newPages)
+        _locks.clear(); _locks.addAll(newLocks)
+        width = newWidth
+        height = newHeight
+        pageIndex = beforeIndex.coerceIn(0, _pages.size - 1)
+        pushSnapshot(oldWidth, oldHeight, beforePages, beforeLocks, beforeIndex, pageIndex)
+        return true
     }
 
     fun undo(): Boolean {
@@ -330,7 +531,7 @@ class EditorEngine(
         val beforeLocks = snapshotLocks()
         val beforeIndex = pageIndex
         for (p in _pages.indices) _pages[p] = newPages[p].copyOf()
-        pushSnapshot(beforePages, beforeLocks, beforeIndex, pageIndex)
+        pushSnapshot(width, height, beforePages, beforeLocks, beforeIndex, pageIndex)
         return true
     }
 
@@ -357,6 +558,8 @@ class EditorEngine(
     private fun snapshotLocks(): List<BooleanArray> = _locks.map { it.copyOf() }
 
     private fun pushSnapshot(
+        beforeWidth: Int,
+        beforeHeight: Int,
         beforePages: List<IntArray>,
         beforeLocks: List<BooleanArray>,
         beforeIndex: Int,
@@ -364,7 +567,7 @@ class EditorEngine(
     ) {
         undoStack.addLast(
             PageSnapshotEntry(
-                width, height, beforePages, beforeLocks, beforeIndex,
+                beforeWidth, beforeHeight, beforePages, beforeLocks, beforeIndex,
                 width, height, snapshotPages(), snapshotLocks(), afterIndex,
             ),
         )

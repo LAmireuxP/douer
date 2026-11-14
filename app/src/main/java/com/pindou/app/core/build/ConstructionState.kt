@@ -5,12 +5,14 @@ package com.pindou.app.core.build
  *
  * done 是活动数组：UI 直接原地改写（不重建对象），配合 [revision] 计数触发 Compose 重绘；
  * 持久化方（AppViewModel.saveConstructionProgress）每次操作后读取同一数组落库。
- * 约定：进度仅覆盖第 1 页（多页图纸按页拆分施工由调用方扩展）。
+ * 进度按页平铺：done 长度为 width × height × pageCount，当前页由 [pageIndex] 指定。
  */
 class ConstructionState(
     val width: Int,
     val height: Int,
     val done: BooleanArray,
+    pages: Int = 1,
+    initialPage: Int = 0,
     /** 引导方向；UI 可切换（按行/按列） */
     var orientation: Orientation = Orientation.ROW,
     /** 当前行/列号（按 [orientation] 解释），引导视线 */
@@ -18,17 +20,23 @@ class ConstructionState(
 ) {
     enum class Orientation { ROW, COLUMN }
 
+    val pageCount: Int = pages.coerceAtLeast(1)
+    var pageIndex: Int = initialPage.coerceIn(0, pageCount - 1)
+        private set
+
     /** 数据变更计数：UI 观察它触发重绘（BooleanArray 原地改写无法被 Compose 察觉） */
     var revision: Int = 0
         private set
 
     init {
-        require(done.size == width * height) { "进度数组尺寸与网格不符" }
+        require(done.size == width * height * pageCount) { "进度数组尺寸与网格/页数不符" }
     }
 
-    val total: Int get() = width * height
+    val pageSize: Int get() = width * height
+    val pageOffset: Int get() = pageIndex * pageSize
+    val total: Int get() = pageSize
 
-    val doneCount: Int get() = done.count { it }
+    val doneCount: Int get() = (pageOffset until pageOffset + pageSize).count { done[it] }
 
     /** 完成比例 0~1 */
     val progress: Float get() = if (total == 0) 0f else doneCount.toFloat() / total
@@ -37,17 +45,34 @@ class ConstructionState(
         revision++
     }
 
+    /** 当前页某格是否已完成 */
+    fun isDone(index: Int): Boolean =
+        index in 0 until pageSize && done[pageOffset + index]
+
+    /** 切换当前页；越界会被钳制，返回是否真的换页 */
+    fun setPage(index: Int): Boolean {
+        val target = index.coerceIn(0, pageCount - 1)
+        if (target == pageIndex) return false
+        pageIndex = target
+        cursor = 0
+        bump()
+        return true
+    }
+
     /** 切换单格完成状态 */
     fun toggle(index: Int) {
-        if (index !in done.indices) return
-        done[index] = !done[index]
+        if (index !in 0 until pageSize) return
+        val global = pageOffset + index
+        done[global] = !done[global]
         bump()
     }
 
     /** 设置单格完成状态；无变化返回 false */
     fun setDone(index: Int, value: Boolean): Boolean {
-        if (index !in done.indices || done[index] == value) return false
-        done[index] = value
+        if (index !in 0 until pageSize) return false
+        val global = pageOffset + index
+        if (done[global] == value) return false
+        done[global] = value
         bump()
         return true
     }
@@ -76,7 +101,7 @@ class ConstructionState(
     fun nextIncompleteRow(): Int {
         for (y in 0 until height) {
             for (x in 0 until width) {
-                if (!done[y * width + x]) return y
+                if (!done[pageOffset + y * width + x]) return y
             }
         }
         return -1
@@ -86,7 +111,7 @@ class ConstructionState(
     fun nextIncompleteCol(): Int {
         for (x in 0 until width) {
             for (y in 0 until height) {
-                if (!done[y * width + x]) return x
+                if (!done[pageOffset + y * width + x]) return x
             }
         }
         return -1

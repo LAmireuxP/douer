@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -59,15 +58,20 @@ import com.pindou.app.core.image.ImageTransforms
 import com.pindou.app.ui.shadcn.Button
 import com.pindou.app.ui.shadcn.OutlinedButton
 import com.pindou.app.ui.shadcn.ShCard
-import com.pindou.app.ui.shadcn.ShIconTile
 import com.pindou.app.ui.shadcn.ShPageHeader
-import com.pindou.app.ui.shadcn.TextButton
 import com.pindou.app.ui.theme.ClayColors
 import com.pindou.app.ui.theme.Spacing
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.math.roundToInt
+
+// 画布自身再向内收 14dp，加上页面 12–16dp 的边距，手柄离屏幕边缘仍有
+// 26dp 以上，右侧滑动不会误触系统返回；相册页之前用 26dp，图片被缩得
+// 太小，视觉上像没铺开。
+private val CropTouchMargin = 14.dp
+private val CropCornerHitRadius = 48.dp
+private val CropEdgeHitRadius = 30.dp
 
 /** 一次拖动手势的语义：移动 / 角柄缩放 / 边柄缩放 / 重新框选 */
 private sealed interface CropDrag {
@@ -98,13 +102,6 @@ private enum class CropGuides(val label: String) {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun CropScreen(vm: AppViewModel) {
-    // 像素画走独立裁剪页：只保留「框住画布」这一件事。
-    // 照片页的三分线、网格着色、旋转镜像在这里全是噪音，用户真正要调
-    // 的网格在下一步「像素校准」里。
-    if (vm.pixelArtMode) {
-        PixelArtCropScreen(vm)
-        return
-    }
     val bitmap = vm.imagePreview
     val rect = vm.cropRect
     val imgW = vm.imageW
@@ -151,32 +148,42 @@ fun CropScreen(vm: AppViewModel) {
             val density = LocalDensity.current
             val maxWpx = with(density) { maxWidth.toPx() }
             val maxHpx = with(density) { maxHeight.toPx() }
-            val scale = remember(imgW, imgH, maxWpx, maxHpx) {
-                minOf(maxWpx / imgW, maxHpx / imgH)
+            val touchMargin = with(density) { CropTouchMargin.toPx() }
+            val scale = remember(imgW, imgH, maxWpx, maxHpx, touchMargin) {
+                minOf(
+                    (maxWpx - touchMargin * 2f).coerceAtLeast(1f) / imgW,
+                    (maxHpx - touchMargin * 2f).coerceAtLeast(1f) / imgH,
+                )
             }
             val dispW = with(density) { (imgW * scale).toDp() }
             val dispH = with(density) { (imgH * scale).toDp() }
             val image = remember(bitmap) { bitmap.asImageBitmap() }
-            Box(Modifier.align(Alignment.Center).size(dispW, dispH)) {
-                Image(
-                    bitmap = image,
-                    contentDescription = "待裁剪图片",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.FillBounds,
-                )
-                CropOverlay(
-                    rect = rect,
-                    scale = scale,
-                    imgW = imgW,
-                    imgH = imgH,
-                    ratio = aspectRatio,
-                    guides = guides,
-                    preview = preview,
-                    previewImage = previewImage,
-                    gridW = vm.gridW,
-                    gridH = vm.gridH,
-                    onRectChange = vm::updateCropRect,
-                )
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                // 裁剪遮罩只铺在图片自身范围，不再把整块可用高度涂灰。
+                // 这样画布边缘就是图片边缘，视觉上图片真正铺满编辑区。
+                Box(Modifier.size(dispW, dispH)) {
+                    Image(
+                        bitmap = image,
+                        contentDescription = "待裁剪图片",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.FillBounds,
+                    )
+                    CropOverlay(
+                        rect = rect,
+                        scale = scale,
+                        originX = 0f,
+                        originY = 0f,
+                        imgW = imgW,
+                        imgH = imgH,
+                        ratio = aspectRatio,
+                        guides = guides,
+                        preview = preview,
+                        previewImage = previewImage,
+                        gridW = vm.gridW,
+                        gridH = vm.gridH,
+                        onRectChange = vm::updateCropRect,
+                    )
+                }
             }
         }
 
@@ -313,7 +320,7 @@ fun CropScreen(vm: AppViewModel) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             OutlinedButton(
-                onClick = { vm.backToHome() },
+                onClick = { vm.exitCrop() },
                 modifier = Modifier.height(48.dp),
             ) {
                 Text("返回")
@@ -324,193 +331,6 @@ fun CropScreen(vm: AppViewModel) {
                 modifier = Modifier.height(48.dp),
             ) {
                 Text("下一步")
-            }
-        }
-    }
-}
-
-/**
- * 像素画专用裁剪页。
- *
- * 整页只有图、四角框和一个确认入口。
- * 用户在下一步的「像素校准」里才看到格子，不会在裁剪阶段同时面对
- * 选区比例、网格点数、格线预览三套坐标系。
- */
-@Composable
-private fun PixelArtCropScreen(vm: AppViewModel) {
-    val bitmap = vm.imagePreview
-    val rect = vm.cropRect
-    val imgW = vm.imageW
-    val imgH = vm.imageH
-    val isSquare = vm.cropAspectMode == CropAspectMode.SQUARE
-    val ratio = if (isSquare) 1f else null
-    val fullSelected = vm.cropOriginalPreset && rect != null && !isSquare &&
-        abs(rect.left) < 0.5f && abs(rect.top) < 0.5f &&
-        abs(rect.right - imgW) < 0.5f && abs(rect.bottom - imgH) < 0.5f
-
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(ClayColors.Canvas),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp)
-                .padding(horizontal = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .clickable { vm.handleBack() },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    MorphIcons.ArrowLeft,
-                    contentDescription = "返回",
-                    tint = ClayColors.Ink,
-                    modifier = Modifier.size(22.dp),
-                )
-            }
-            Text(
-                "选择范围",
-                style = MaterialTheme.typography.titleLarge,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.weight(1f),
-            )
-            // 右侧留出与返回键等宽的占位，标题保持视觉居中；
-            // 确认入口只保留底部整行按钮，避免同一屏两个「下一步」。
-            Spacer(Modifier.size(44.dp))
-        }
-
-        Text(
-            "拖动四角框住画面主体，下一步再校准像素格子",
-            style = MaterialTheme.typography.bodySmall,
-            color = ClayColors.Muted,
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp),
-        )
-
-        if (bitmap == null || rect == null || imgW <= 0 || imgH <= 0) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    "没有可裁剪的图片，请重新导入",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(12.dp))
-                Button(onClick = { vm.backToHome() }) { Text("返回首页") }
-            }
-            return@Column
-        }
-
-        BoxWithConstraints(
-            Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-        ) {
-            val density = LocalDensity.current
-            val maxWpx = with(density) { maxWidth.toPx() }
-            val maxHpx = with(density) { maxHeight.toPx() }
-            val scale = remember(imgW, imgH, maxWpx, maxHpx) {
-                minOf(maxWpx / imgW, maxHpx / imgH)
-            }
-            val dispW = with(density) { (imgW * scale).toDp() }
-            val dispH = with(density) { (imgH * scale).toDp() }
-            val image = remember(bitmap) { bitmap.asImageBitmap() }
-            Box(Modifier.align(Alignment.Center).size(dispW, dispH)) {
-                Image(
-                    bitmap = image,
-                    contentDescription = "待裁剪像素画",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.FillBounds,
-                )
-                CropOverlay(
-                    rect = rect,
-                    scale = scale,
-                    imgW = imgW,
-                    imgH = imgH,
-                    ratio = ratio,
-                    guides = CropGuides.NONE,
-                    preview = null,
-                    previewImage = null,
-                    gridW = vm.gridW,
-                    gridH = vm.gridH,
-                    showGrid = false,
-                    showGuides = false,
-                    onRectChange = vm::updateCropRect,
-                )
-            }
-        }
-
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .background(ClayColors.SurfaceCard)
-                .padding(horizontal = Spacing.md, vertical = Spacing.sm),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
-            ) {
-                CropSegment(
-                    text = "原图",
-                    selected = fullSelected,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    vm.selectCropOriginal()
-                }
-                CropSegment(
-                    text = "自由",
-                    selected = !isSquare && !fullSelected,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    vm.changeCropAspectMode(CropAspectMode.FREE)
-                }
-                CropSegment(
-                    text = "正方形",
-                    selected = isSquare,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    vm.changeCropAspectMode(CropAspectMode.SQUARE)
-                }
-            }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = Spacing.xs, bottom = Spacing.sm),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "选区 ${rect.width.roundToInt()} × ${rect.height.roundToInt()} px",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    "下一步：像素校准",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = ClayColors.PrimaryInk,
-                )
-            }
-
-            Button(
-                onClick = { vm.confirmCrop() },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp),
-            ) {
-                Icon(MorphIcons.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-                Text("下一步", modifier = Modifier.padding(start = 6.dp))
             }
         }
     }
@@ -629,6 +449,8 @@ private fun GridStepper(value: Int, onChange: (Int) -> Unit) {
 private fun CropOverlay(
     rect: CropRect,
     scale: Float,
+    originX: Float,
+    originY: Float,
     imgW: Int,
     imgH: Int,
     ratio: Float?,
@@ -644,18 +466,28 @@ private fun CropOverlay(
     val currentRect by rememberUpdatedState(rect)
     val currentRatio by rememberUpdatedState(ratio)
     val currentGuides by rememberUpdatedState(guides)
-    val cornerHitR = with(LocalDensity.current) { 56.dp.toPx() }
-    val edgeHitR = with(LocalDensity.current) { 28.dp.toPx() }
+    val cornerHitR = with(LocalDensity.current) { CropCornerHitRadius.toPx() }
+    val edgeHitR = with(LocalDensity.current) { CropEdgeHitRadius.toPx() }
     var drag by remember { mutableStateOf<CropDrag?>(null) }
     val haptic = LocalHapticFeedback.current
 
     Canvas(
         Modifier
             .fillMaxSize()
-            .pointerInput(imgW, imgH, scale) {
+            .pointerInput(imgW, imgH, scale, originX, originY) {
                 detectDragGestures(
                     onDragStart = { pos ->
-                        drag = hitTest(pos, currentRect, scale, cornerHitR, edgeHitR)
+                        drag = hitTest(
+                            pos = pos,
+                            rect = currentRect,
+                            scale = scale,
+                            originX = originX,
+                            originY = originY,
+                            imgW = imgW,
+                            imgH = imgH,
+                            cornerHitR = cornerHitR,
+                            edgeHitR = edgeHitR,
+                        )
                         if (drag !is CropDrag.New) {
                             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         }
@@ -664,8 +496,10 @@ private fun CropOverlay(
                         change.consume()
                         val mode = drag ?: return@detectDragGestures
                         val r = currentRect
-                        val ix = change.position.x / scale
-                        val iy = change.position.y / scale
+                        val ix = ((change.position.x - originX) / scale)
+                            .coerceIn(0f, imgW.toFloat())
+                        val iy = ((change.position.y - originY) / scale)
+                            .coerceIn(0f, imgH.toFloat())
                         val maxW = imgW.toFloat()
                         val maxH = imgH.toFloat()
                         val lockedRatio = currentRatio
@@ -716,6 +550,8 @@ private fun CropOverlay(
         drawCropUi(
             rect = currentRect,
             scale = scale,
+            originX = originX,
+            originY = originY,
             guides = currentGuides,
             preview = preview,
             previewImage = previewImage,
@@ -732,9 +568,15 @@ private fun hitTest(
     pos: Offset,
     rect: CropRect,
     scale: Float,
+    originX: Float,
+    originY: Float,
+    imgW: Int,
+    imgH: Int,
     cornerHitR: Float,
     edgeHitR: Float,
 ): CropDrag {
+    val px = pos.x - originX
+    val py = pos.y - originY
     val cl = rect.left * scale
     val ct = rect.top * scale
     val cr = rect.right * scale
@@ -743,7 +585,7 @@ private fun hitTest(
     var bestDist = Float.MAX_VALUE
     val corners = arrayOf(Offset(cl, ct), Offset(cr, ct), Offset(cl, cb), Offset(cr, cb))
     corners.forEachIndexed { i, c ->
-        val d = hypot(pos.x - c.x, pos.y - c.y)
+        val d = hypot(px - c.x, py - c.y)
         if (d < bestDist) {
             bestDist = d
             bestCorner = i
@@ -755,25 +597,26 @@ private fun hitTest(
         return CropDrag.Resize(anchorX, anchorY)
     }
 
-    val spanH = cb - ct
-    val margin = spanH * 0.22f
-    val inTopPart = pos.y > ct + margin && pos.y < cb - margin
-    val spanW = cr - cl
-    val marginW = spanW * 0.22f
-    val inLeftPart = pos.x > cl + marginW && pos.x < cr - marginW
+    /*
+     * 边柄命中区覆盖整条边，并沿边线向外扩 edgeHitR。四个角已经优先匹配，
+     * 因此不会和角柄抢手势。图片底边通常离组件边缘很近，如果只认图片内部，
+     * 可点区域会被系统手势区和屏幕边缘吃掉，表现就是“看得见但点不上”。
+     */
+    val inVerticalSpan = py >= ct - edgeHitR && py <= cb + edgeHitR && cb - ct > 0f
+    val inHorizontalSpan = px >= cl - edgeHitR && px <= cr + edgeHitR && cr - cl > 0f
     when {
-        abs(pos.x - cl) <= edgeHitR && inTopPart && spanH > 2 * margin ->
+        abs(px - cl) <= edgeHitR && inVerticalSpan ->
             return CropDrag.Edge(CropEdgeSide.LEFT)
-        abs(pos.x - cr) <= edgeHitR && inTopPart && spanH > 2 * margin ->
+        abs(px - cr) <= edgeHitR && inVerticalSpan ->
             return CropDrag.Edge(CropEdgeSide.RIGHT)
-        abs(pos.y - ct) <= edgeHitR && inLeftPart && spanW > 2 * marginW ->
+        abs(py - ct) <= edgeHitR && inHorizontalSpan ->
             return CropDrag.Edge(CropEdgeSide.TOP)
-        abs(pos.y - cb) <= edgeHitR && inLeftPart && spanW > 2 * marginW ->
+        abs(py - cb) <= edgeHitR && inHorizontalSpan ->
             return CropDrag.Edge(CropEdgeSide.BOTTOM)
     }
 
-    val ix = pos.x / scale
-    val iy = pos.y / scale
+    val ix = (px / scale).coerceIn(0f, imgW.toFloat())
+    val iy = (py / scale).coerceIn(0f, imgH.toFloat())
     return if (ix >= rect.left && ix <= rect.right && iy >= rect.top && iy <= rect.bottom) {
         CropDrag.Move(rect, ix, iy)
     } else {
@@ -784,6 +627,8 @@ private fun hitTest(
 private fun DrawScope.drawCropUi(
     rect: CropRect,
     scale: Float,
+    originX: Float,
+    originY: Float,
     guides: CropGuides,
     preview: CropGridPreview?,
     previewImage: androidx.compose.ui.graphics.ImageBitmap?,
@@ -792,10 +637,10 @@ private fun DrawScope.drawCropUi(
     showGrid: Boolean = true,
     showGuides: Boolean = true,
 ) {
-    val cl = rect.left * scale
-    val ct = rect.top * scale
-    val cr = rect.right * scale
-    val cb = rect.bottom * scale
+    val cl = originX + rect.left * scale
+    val ct = originY + rect.top * scale
+    val cr = originX + rect.right * scale
+    val cb = originY + rect.bottom * scale
     val w = cr - cl
     val h = cb - ct
 

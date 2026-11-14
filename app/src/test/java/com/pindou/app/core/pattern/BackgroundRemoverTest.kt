@@ -156,4 +156,80 @@ class BackgroundRemoverTest {
         val mask = BackgroundRemover.detect(grid, 2, 2)
         assertTrue(mask.none { it })
     }
+
+    @Test
+    fun `AI 掩码保护与背景同色的主体内部`() {
+        val w = 21
+        val h = 21
+        val grid = filled(w, h, white)
+        // 上方开口的 U 形主体：泛洪会从开口进入，把内部白区当背景清掉。
+        for (y in 5..15) {
+            grid[y * w + 5] = red
+            grid[y * w + 6] = red
+            grid[y * w + 14] = red
+            grid[y * w + 15] = red
+        }
+        for (x in 5..15) {
+            grid[14 * w + x] = red
+            grid[15 * w + x] = red
+        }
+        val cells = IntArray(w * h) { 9 }
+        val interior = 9 * w + 10
+
+        val withoutMask = BackgroundRemover.applyToCells(
+            cells, grid, w, h, tolerance = 10.0,
+        )
+        assertEquals("无掩码时开口内部应被清空", -1, withoutMask[interior])
+
+        val maskData = ByteArray(w * h)
+        for (y in 7..12) for (x in 8..12) maskData[y * w + x] = 1
+        val withMask = BackgroundRemover.applyToCells(
+            cells, grid, w, h, tolerance = 10.0,
+            subjectMask = SubjectMask(w, h, maskData),
+        )
+        assertEquals("掩码覆盖的白区必须恢复原色号", 9, withMask[interior])
+    }
+
+    @Test
+    fun `源图掩码按目标格覆盖保护`() {
+        val srcW = 60
+        val srcH = 60
+        val pixels = filled(srcW, srcH, white)
+        for (y in 25..34) for (x in 25..34) pixels[y * srcW + x] = red
+        val w = 15
+        val h = 15
+        val cells = IntArray(w * h) { 7 }
+
+        val withoutMask = BackgroundRemover.applyToCellsFromPixels(
+            cells, pixels, srcW, srcH, w, h, tolerance = 12.0, scale = 3,
+        )
+        assertEquals(-1, withoutMask[0])
+
+        val maskData = ByteArray(srcW * srcH)
+        maskData[0] = 1
+        val withMask = BackgroundRemover.applyToCellsFromPixels(
+            cells, pixels, srcW, srcH, w, h, tolerance = 12.0, scale = 3,
+            subjectMask = SubjectMask(srcW, srcH, maskData),
+        )
+        assertEquals("目标格覆盖到源图主体像素时应恢复", 7, withMask[0])
+        assertEquals("未覆盖主体像素的邻格仍应清空", -1, withMask[1])
+    }
+
+    @Test
+    fun `掩码尺寸不匹配时忽略掩码`() {
+        val w = 11
+        val h = 11
+        val grid = filled(w, h, white)
+        for (y in 4..6) for (x in 4..6) grid[y * w + x] = red
+        val cells = IntArray(w * h) { 4 }
+        val withoutMask = BackgroundRemover.applyToCells(
+            cells, grid, w, h, tolerance = 10.0,
+        )
+        val mismatched = SubjectMask(3, 3, ByteArray(9) { 1 })
+        val withMask = BackgroundRemover.applyToCells(
+            cells, grid, w, h, tolerance = 10.0, subjectMask = mismatched,
+        )
+
+        assertEquals(withoutMask.toList(), withMask.toList())
+    }
 }

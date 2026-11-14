@@ -115,6 +115,9 @@ object BpatCodec {
         require(dto.format == FORMAT) { "不支持的图纸格式：${dto.format}" }
         require(dto.w in 1..200 && dto.h in 1..200) { "网格尺寸超出范围 ${dto.w}×${dto.h}" }
         require(dto.colors.isNotEmpty()) { "色表为空" }
+        require(dto.colors.size <= 255) { "色表最多 255 色" }
+        require(dto.title.length <= 100) { "图纸名称过长" }
+        require(dto.album.length <= 100) { "专辑名称过长" }
         require(dto.pixels.isNotEmpty()) { "页数据为空" }
         val size = dto.w * dto.h
         val pages = dto.pixels.mapIndexed { pi, b64 ->

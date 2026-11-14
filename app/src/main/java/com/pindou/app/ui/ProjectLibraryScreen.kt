@@ -1,53 +1,73 @@
+@file:OptIn(ExperimentalLayoutApi::class)
+
 package com.pindou.app.ui
 
 import android.graphics.BitmapFactory
 import android.util.LruCache
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.pindou.app.core.data.ProjectSummary
 import com.pindou.app.ui.icon.MorphIcons
 import com.pindou.app.ui.shadcn.Button
@@ -59,21 +79,26 @@ import com.pindou.app.ui.shadcn.TextButton
 import com.pindou.app.ui.theme.ClayColors
 import com.pindou.app.ui.theme.Spacing
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
- * 项目库首页：只做作品管理。
+ * 项目库首页：作品管理。
  *
  * 性能上有三条硬约束：
  * 1. 列表订阅 ProjectSummary，不读 cells / locked / doneCells 三个大 BLOB；
  * 2. 用 LazyVerticalGrid 只组合可见卡片，不再 chunked(2) 一次性铺完；
  * 3. 缩略图在 IO 线程按卡片尺寸降采样解码，并放进 LruCache，主线程不碰文件。
  *
- * 新建图纸统一收在「创建」页。这里保留的「导入 .bpat」是工程文件导入，
- * 与照片/像素图/色号图的生成流程不是一件事，因此单独放在标题右侧。
+ * 交互分两层：
+ * - 常驻态：点卡片打开，长按或右上角「⋯」弹底部动作面板；
+ * - 多选态：点卡片加选/取消，顶栏全选或完成，底部浮条批量收藏/专辑/删除。
+ *
+ * 多选态会通过 vm.librarySelecting 让首页隐藏玻璃底栏，避免「创建」被误触
+ * 把整批选择丢掉；返回键先退出多选，再走首页默认返回。
  */
 @Composable
 fun ProjectLibraryScreen(
@@ -86,6 +111,36 @@ fun ProjectLibraryScreen(
     var renameTarget by remember { mutableStateOf<ProjectSummary?>(null) }
     var deleteTarget by remember { mutableStateOf<ProjectSummary?>(null) }
     var albumTarget by remember { mutableStateOf<ProjectSummary?>(null) }
+    var actionTarget by remember { mutableStateOf<ProjectSummary?>(null) }
+    var batchDeleteOpen by remember { mutableStateOf(false) }
+    var batchAlbumOpen by remember { mutableStateOf(false) }
+
+    val selecting = vm.librarySelecting
+    var selectedIds by rememberSaveable(stateSaver = SelectionSaver) {
+        mutableStateOf(emptySet<Long>())
+    }
+
+    fun exitSelection() {
+        vm.librarySelecting = false
+        selectedIds = emptySet()
+        batchDeleteOpen = false
+        batchAlbumOpen = false
+    }
+
+    fun toggleSelection(id: Long) {
+        val next = LibrarySelection.toggle(selectedIds, id)
+        selectedIds = next
+        if (next.isEmpty()) vm.librarySelecting = false
+    }
+
+    fun enterSelection(ids: Set<Long>) {
+        selectedIds = ids
+        batchDeleteOpen = false
+        batchAlbumOpen = false
+        vm.librarySelecting = true
+    }
+
+    BackHandler(enabled = selecting) { exitSelection() }
 
     // 搜索/筛选只在这几个输入变化时重算，输入文字时不做整表遍历
     val visibleProjects = remember(projects, vm.libraryQuery, vm.libraryFavOnly, vm.libraryAlbum) {
@@ -95,206 +150,285 @@ fun ProjectLibraryScreen(
     val paletteLabels = remember(vm.palettes) {
         vm.palettes.associate { it.brand to it.brandLabel }
     }
+    val selectedProjects = remember(projects, selectedIds) {
+        projects.filter { it.id in selectedIds }
+    }
+    val allVisibleSelected = remember(selectedIds, visibleProjects) {
+        LibrarySelection.allSelected(selectedIds, visibleProjects.map { it.id })
+    }
+    val allSelectedFav = selectedProjects.isNotEmpty() && selectedProjects.all { it.fav }
 
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(2),
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(
-            start = Spacing.md,
-            end = Spacing.md,
-            top = Spacing.lg,
-            // 玻璃底栏叠在列表上，尾部多留滚动余量
-            bottom = 120.dp,
-        ),
-        verticalArrangement = Arrangement.spacedBy(Spacing.sm),
-        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
-    ) {
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.Bottom,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "项目库",
-                        style = MaterialTheme.typography.displayLarge,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
-                    Text(
-                        "${projects.size} 份图纸 · 保存在本机",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
-                }
-                OutlinedButton(
-                    onClick = onPickBpat,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                    modifier = Modifier.padding(bottom = 4.dp),
-                ) {
-                    Icon(
-                        MorphIcons.FolderOpen,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text("导入 .bpat", style = MaterialTheme.typography.labelMedium)
-                }
-            }
-        }
-
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            ShSearchField(
-                value = vm.libraryQuery,
-                onValueChange = { vm.libraryQuery = it },
-                placeholder = "搜索图纸名称或专辑",
-            )
-        }
-
-        // 收藏 / 专辑筛选：横向滚动的 pill chip
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-            ) {
-                ShChip(
-                    text = "全部",
-                    selected = !vm.libraryFavOnly && vm.libraryAlbum == null,
-                    onClick = {
-                        vm.libraryFavOnly = false
-                        vm.libraryAlbum = null
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize()) {
+            if (selecting) {
+                SelectionTopBar(
+                    count = selectedProjects.size,
+                    allVisibleSelected = allVisibleSelected,
+                    canSelectAll = visibleProjects.isNotEmpty(),
+                    onToggleAll = {
+                        selectedIds =
+                            LibrarySelection.toggleAll(selectedIds, visibleProjects.map { it.id })
                     },
+                    onDone = ::exitSelection,
                 )
-                ShChip(
-                    text = "收藏",
-                    selected = vm.libraryFavOnly,
-                    onClick = {
-                        vm.libraryFavOnly = !vm.libraryFavOnly
-                        vm.libraryAlbum = null
-                    },
-                    leading = MorphIcons.Star,
-                )
-                albums.forEach { album ->
-                    ShChip(
-                        text = album,
-                        selected = vm.libraryAlbum == album,
-                        onClick = { vm.libraryAlbum = if (vm.libraryAlbum == album) null else album },
-                    )
-                }
             }
-        }
 
-        vm.lastError?.let { err ->
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.errorContainer)
-                        .padding(Spacing.sm),
-                ) {
-                    Text(
-                        err,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-        }
-
-        when {
-            projects.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
-                ShCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = Spacing.lg, vertical = Spacing.xl),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(56.dp)
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(ClayColors.TintSky),
-                            contentAlignment = Alignment.Center,
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(2),
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(
+                    start = Spacing.md,
+                    end = Spacing.md,
+                    top = if (selecting) Spacing.sm else Spacing.lg,
+                    // 底栏浮在列表上，尾部多留滚动余量，最后一行不会被操作条压住
+                    bottom = if (selecting) 108.dp else 120.dp,
+                ),
+                verticalArrangement = Arrangement.spacedBy(Spacing.sm),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+            ) {
+                if (!selecting) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.Bottom,
                         ) {
-                            Icon(
-                                MorphIcons.LayoutGrid,
-                                contentDescription = null,
-                                tint = ClayColors.PrimaryInk,
-                                modifier = Modifier.size(26.dp),
-                            )
-                        }
-                        Text(
-                            "还没有图纸",
-                            style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.padding(top = Spacing.md),
-                        )
-                        Text(
-                            "去创建页导入照片、像素画或色号图，生成的图纸会自动保存在这里。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(top = Spacing.xxs),
-                        )
-                        Button(
-                            onClick = onGoCreate,
-                            modifier = Modifier.padding(top = Spacing.md),
-                        ) {
-                            Text("去创建")
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "项目库",
+                                    style = MaterialTheme.typography.displayLarge,
+                                    color = MaterialTheme.colorScheme.onBackground,
+                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(top = 2.dp),
+                                ) {
+                                    Text(
+                                        "${projects.size} 份图纸 · 保存在本机",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    if (projects.isNotEmpty()) {
+                                        Text(
+                                            "多选",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = ClayColors.PrimaryInk,
+                                            modifier = Modifier
+                                                .padding(start = 8.dp)
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .clickable { enterSelection(emptySet()) }
+                                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                                        )
+                                    }
+                                }
+                            }
+                            OutlinedButton(
+                                onClick = onPickBpat,
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                                modifier = Modifier.padding(bottom = 4.dp),
+                            ) {
+                                Icon(
+                                    MorphIcons.FolderOpen,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text("导入 .bpat", style = MaterialTheme.typography.labelMedium)
+                            }
                         }
                     }
                 }
-            }
 
-            visibleProjects.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
-                ShCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    ShSearchField(
+                        value = vm.libraryQuery,
+                        onValueChange = { vm.libraryQuery = it },
+                        placeholder = "搜索图纸名称或文件夹",
+                    )
+                }
+
+                // 收藏 / 专辑筛选：横向滚动的 pill chip
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(Spacing.lg),
-                        horizontalAlignment = Alignment.CenterHorizontally,
+                            .horizontalScroll(rememberScrollState()),
                     ) {
-                        Text("没有匹配的图纸", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "换个关键词，或清除当前筛选",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = Spacing.xxs),
-                        )
-                        TextButton(
+                        ShChip(
+                            text = "全部",
+                            selected = !vm.libraryFavOnly && vm.libraryAlbum == null,
                             onClick = {
-                                vm.libraryQuery = ""
                                 vm.libraryFavOnly = false
                                 vm.libraryAlbum = null
                             },
-                            modifier = Modifier.padding(top = Spacing.xs),
-                        ) {
-                            Text("清除筛选")
+                        )
+                        ShChip(
+                            text = "收藏",
+                            selected = vm.libraryFavOnly,
+                            onClick = {
+                                vm.libraryFavOnly = !vm.libraryFavOnly
+                                vm.libraryAlbum = null
+                            },
+                            leading = MorphIcons.Star,
+                        )
+                        albums.forEach { album ->
+                            ShChip(
+                                text = album,
+                                selected = vm.libraryAlbum == album,
+                                onClick = {
+                                    vm.libraryAlbum = if (vm.libraryAlbum == album) null else album
+                                },
+                            )
                         }
                     }
                 }
-            }
 
-            else -> items(
-                items = visibleProjects,
-                key = { it.id },
-                contentType = { "project-card" },
-            ) { project ->
-                ProjectCard(
-                    project = project,
-                    paletteLabel = paletteLabels[project.paletteBrand] ?: project.paletteBrand,
-                    onClick = { vm.openProject(project) },
-                    onRename = { renameTarget = project },
-                    onDelete = { deleteTarget = project },
-                    onFav = { vm.setFavProject(project, !project.fav) },
-                    onDuplicate = { vm.duplicateProject(project) },
-                    onAlbum = { albumTarget = project },
-                )
+                vm.lastError?.let { err ->
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(MaterialTheme.colorScheme.errorContainer)
+                                .padding(Spacing.sm),
+                        ) {
+                            Text(
+                                err,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                }
+
+                when {
+                    projects.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
+                        ShCard(modifier = Modifier.fillMaxWidth()) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = Spacing.lg, vertical = Spacing.xl),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(56.dp)
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .background(ClayColors.TintSky),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        MorphIcons.LayoutGrid,
+                                        contentDescription = null,
+                                        tint = ClayColors.PrimaryInk,
+                                        modifier = Modifier.size(26.dp),
+                                    )
+                                }
+                                Text(
+                                    "还没有图纸",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.padding(top = Spacing.md),
+                                )
+                                Text(
+                                    "去创建页导入照片、像素画或色号图，生成的图纸会自动保存在这里。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(top = Spacing.xxs),
+                                )
+                                Button(
+                                    onClick = onGoCreate,
+                                    modifier = Modifier.padding(top = Spacing.md),
+                                ) {
+                                    Text("去创建")
+                                }
+                            }
+                        }
+                    }
+
+                    visibleProjects.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
+                        ShCard(modifier = Modifier.fillMaxWidth()) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(Spacing.lg),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Text("没有匹配的图纸", style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    "换个关键词，或清除当前筛选",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = Spacing.xxs),
+                                )
+                                TextButton(
+                                    onClick = {
+                                        vm.libraryQuery = ""
+                                        vm.libraryFavOnly = false
+                                        vm.libraryAlbum = null
+                                    },
+                                    modifier = Modifier.padding(top = Spacing.xs),
+                                ) {
+                                    Text("清除筛选")
+                                }
+                            }
+                        }
+                    }
+
+                    else -> items(
+                        items = visibleProjects,
+                        key = { it.id },
+                        contentType = { "project-card" },
+                    ) { project ->
+                        ProjectCard(
+                            project = project,
+                            paletteLabel = paletteLabels[project.paletteBrand]
+                                ?: project.paletteBrand,
+                            selecting = selecting,
+                            selected = project.id in selectedIds,
+                            onClick = {
+                                if (selecting) toggleSelection(project.id)
+                                else vm.openProject(project)
+                            },
+                            onLongClick = {
+                                if (selecting) toggleSelection(project.id)
+                                else actionTarget = project
+                            },
+                            onMore = { actionTarget = project },
+                        )
+                    }
+                }
             }
         }
+
+        if (selecting) {
+            SelectionActionBar(
+                count = selectedProjects.size,
+                favorite = allSelectedFav,
+                onFav = {
+                    vm.setFavProjects(selectedProjects.map { it.id }, !allSelectedFav)
+                },
+                onAlbum = { batchAlbumOpen = true },
+                onDelete = { batchDeleteOpen = true },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth(),
+            )
+        }
+    }
+
+    actionTarget?.let { project ->
+        ProjectActionSheet(
+            project = project,
+            paletteLabel = paletteLabels[project.paletteBrand] ?: project.paletteBrand,
+            onDismiss = { actionTarget = null },
+            onFav = { vm.setFavProject(project, !project.fav) },
+            onDuplicate = { vm.duplicateProject(project) },
+            onAlbum = { albumTarget = project },
+            onRename = { renameTarget = project },
+            onSelect = { enterSelection(setOf(project.id)) },
+            onDelete = { deleteTarget = project },
+        )
     }
 
     renameTarget?.let { target ->
@@ -336,29 +470,218 @@ fun ProjectLibraryScreen(
         )
     }
 
-    albumTarget?.let { target ->
-        var album by remember(target.id) { mutableStateOf(target.album) }
+    if (batchDeleteOpen && selectedProjects.isNotEmpty()) {
+        val count = selectedProjects.size
         AlertDialog(
-            onDismissRequest = { albumTarget = null },
-            title = { Text("移到专辑") },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = album,
-                        onValueChange = { album = it },
-                        singleLine = true,
-                        label = { Text("专辑名（留空 = 未分组）") },
-                        shape = RoundedCornerShape(8.dp),
-                    )
-                }
-            },
+            onDismissRequest = { batchDeleteOpen = false },
+            title = { Text("删除 $count 份图纸") },
+            text = { Text("选中的图纸、缩略图和图层工程会一起删除，此操作不可恢复。") },
             confirmButton = {
                 TextButton(onClick = {
-                    vm.setAlbumProject(target, album)
-                    albumTarget = null
-                }) { Text("保存") }
+                    val ids = selectedProjects.map { it.id }
+                    batchDeleteOpen = false
+                    vm.deleteProjects(ids)
+                    exitSelection()
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
             },
-            dismissButton = { TextButton(onClick = { albumTarget = null }) { Text("取消") } },
+            dismissButton = {
+                TextButton(onClick = { batchDeleteOpen = false }) { Text("取消") }
+            },
+        )
+    }
+
+    albumTarget?.let { target ->
+        AlbumDialog(
+            title = "创建文件夹",
+            subtitle = "「${target.name}」",
+            initial = target.album,
+            albums = albums,
+            onDismiss = { albumTarget = null },
+            onConfirm = { album ->
+                vm.setAlbumProject(target, album)
+                albumTarget = null
+            },
+        )
+    }
+
+    if (batchAlbumOpen && selectedProjects.isNotEmpty()) {
+        val commonAlbum = selectedProjects
+            .map { it.album.trim() }
+            .distinct()
+            .singleOrNull()
+            .orEmpty()
+        AlbumDialog(
+            title = "创建文件夹",
+            subtitle = "已选 ${selectedProjects.size} 份图纸",
+            initial = commonAlbum,
+            albums = albums,
+            onDismiss = { batchAlbumOpen = false },
+            onConfirm = { album ->
+                vm.setAlbumProjects(selectedProjects.map { it.id }, album)
+                batchAlbumOpen = false
+            },
+        )
+    }
+}
+
+/** 多选 Set 的保存器：旋转屏幕后选择不丢。 */
+private val SelectionSaver = listSaver<Set<Long>, Long>(
+    save = { it.toList() },
+    restore = { it.toSet() },
+)
+
+/**
+ * 多选顶栏。固定在列表上方不随滚动走，返回逻辑只保留「完成」一个出口，
+ * 避免用户在长列表里滚到一半找不到退出按钮。
+ */
+@Composable
+private fun SelectionTopBar(
+    count: Int,
+    allVisibleSelected: Boolean,
+    canSelectAll: Boolean,
+    onToggleAll: () -> Unit,
+    onDone: () -> Unit,
+) {
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(60.dp)
+                .background(ClayColors.Canvas)
+                .padding(horizontal = Spacing.md),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .background(ClayColors.Primary.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    MorphIcons.Check,
+                    contentDescription = null,
+                    tint = ClayColors.PrimaryInk,
+                    modifier = Modifier.size(17.dp),
+                )
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 10.dp),
+            ) {
+                Text(
+                    "已选 $count 项",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = ClayColors.Ink,
+                )
+                Text(
+                    "点按图纸继续加选",
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                    color = ClayColors.Muted,
+                )
+            }
+            TextButton(onClick = onToggleAll, enabled = canSelectAll) {
+                Text(
+                    if (allVisibleSelected) "取消全选" else "全选",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (canSelectAll) ClayColors.BodyStrong else ClayColors.MutedSoft,
+                )
+            }
+            TextButton(onClick = onDone) {
+                Text(
+                    "完成",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = ClayColors.PrimaryInk,
+                )
+            }
+        }
+        HorizontalDivider(thickness = 1.dp, color = ClayColors.HairlineSoft)
+    }
+}
+
+/**
+ * 多选底部操作条：三栏等宽，图标与文字都居中，删除固定在最右并用错误色。
+ * 浮在列表上、离系统手势条 10dp，不占 Scaffold 的 bottomBar 槽位。
+ */
+@Composable
+private fun SelectionActionBar(
+    count: Int,
+    favorite: Boolean,
+    onFav: () -> Unit,
+    onAlbum: () -> Unit,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (count == 0) return
+    val shape = RoundedCornerShape(16.dp)
+    Row(
+        modifier = modifier
+            .padding(horizontal = Spacing.md, vertical = 10.dp)
+            .shadow(
+                elevation = 14.dp,
+                shape = shape,
+                clip = false,
+                ambientColor = Color.Black.copy(alpha = 0.08f),
+                spotColor = Color.Black.copy(alpha = 0.14f),
+            )
+            .clip(shape)
+            .background(ClayColors.SurfaceCard)
+            .border(1.dp, ClayColors.Hairline, shape)
+            .padding(horizontal = 6.dp, vertical = 5.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        SelectionAction(
+            icon = MorphIcons.Star,
+            label = if (favorite) "取消收藏" else "收藏",
+            onClick = onFav,
+            modifier = Modifier.weight(1f),
+        )
+        SelectionAction(
+            icon = MorphIcons.FolderOpen,
+            label = "创建文件夹",
+            onClick = onAlbum,
+            modifier = Modifier.weight(1f),
+        )
+        SelectionAction(
+            icon = MorphIcons.Trash,
+            label = "删除",
+            onClick = onDelete,
+            danger = true,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun SelectionAction(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    danger: Boolean = false,
+) {
+    val tint = if (danger) MaterialTheme.colorScheme.error else ClayColors.BodyStrong
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(11.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(
+            icon,
+            contentDescription = label,
+            tint = tint,
+            modifier = Modifier.size(20.dp),
+        )
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+            color = tint,
+            modifier = Modifier.padding(top = 3.dp),
         )
     }
 }
@@ -368,34 +691,25 @@ fun ProjectLibraryScreen(
 private fun ProjectCard(
     project: ProjectSummary,
     paletteLabel: String,
+    selecting: Boolean,
+    selected: Boolean,
     onClick: () -> Unit,
-    onRename: () -> Unit,
-    onDelete: () -> Unit,
-    onFav: () -> Unit,
-    onDuplicate: () -> Unit,
-    onAlbum: () -> Unit,
+    onLongClick: () -> Unit,
+    onMore: () -> Unit,
 ) {
-    var menuOpen by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(12.dp)
-
-    // 首帧先出占位，IO 解码完成后替换；离开可见区域时 produceState 自动取消
-    val thumb by produceState<ImageBitmap?>(
-        initialValue = null,
-        project.thumbnailPath,
-        project.updatedAt,
-    ) {
-        value = ThumbnailCache.load(project.thumbnailPath, project.updatedAt)
-    }
+    val thumb by rememberProjectThumb(project)
+    val edge = if (selected) ClayColors.Primary else MaterialTheme.colorScheme.outline
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(shape)
             .background(MaterialTheme.colorScheme.surface)
-            .border(1.dp, MaterialTheme.colorScheme.outline, shape)
+            .border(if (selected) 2.dp else 1.dp, edge, shape)
             .combinedClickable(
                 onClick = onClick,
-                onLongClick = { menuOpen = true },
+                onLongClick = onLongClick,
             ),
     ) {
         Box(
@@ -416,18 +730,62 @@ private fun ProjectCard(
             } else {
                 BeadDot(ClayColors.BrandMint)
             }
-            if (project.fav) {
-                Icon(
-                    imageVector = MorphIcons.Star,
-                    contentDescription = "已收藏",
-                    tint = ClayColors.BrandOchre,
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(8.dp)
-                        .size(14.dp),
+
+            if (selected) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(ClayColors.Primary.copy(alpha = 0.07f)),
                 )
             }
+
+            if (selecting) {
+                SelectionBadge(
+                    selected = selected,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(8.dp),
+                )
+            } else {
+                if (project.fav) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(8.dp)
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.92f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            MorphIcons.Star,
+                            contentDescription = "已收藏",
+                            tint = ClayColors.BrandOchre,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.90f))
+                        .border(1.dp, ClayColors.Hairline, CircleShape)
+                        .clickable(onClick = onMore),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        MorphIcons.MoreVertical,
+                        contentDescription = "更多操作",
+                        tint = ClayColors.BodyStrong,
+                        modifier = Modifier.size(17.dp),
+                    )
+                }
+            }
         }
+
         Column(Modifier.padding(horizontal = Spacing.sm, vertical = 10.dp)) {
             Text(
                 project.name,
@@ -452,44 +810,356 @@ private fun ProjectCard(
             )
         }
     }
+}
 
-    if (menuOpen) {
-        AlertDialog(
-            onDismissRequest = { menuOpen = false },
-            title = { Text(project.name) },
-            text = {
-                Column {
-                    Text(
-                        "${project.width}×${project.height} · $paletteLabel",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    TextButton(onClick = {
-                        menuOpen = false
-                        onFav()
-                    }) { Text(if (project.fav) "取消收藏" else "收藏") }
-                    TextButton(onClick = {
-                        menuOpen = false
-                        onDuplicate()
-                    }) { Text("复刻一份") }
-                    TextButton(onClick = {
-                        menuOpen = false
-                        onAlbum()
-                    }) { Text("移到专辑") }
-                    TextButton(onClick = {
-                        menuOpen = false
-                        onRename()
-                    }) { Text("重命名") }
-                    TextButton(onClick = {
-                        menuOpen = false
-                        onDelete()
-                    }) { Text("删除", color = MaterialTheme.colorScheme.error) }
-                }
-            },
-            confirmButton = {},
-            dismissButton = {},
-        )
+@Composable
+private fun SelectionBadge(selected: Boolean, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .size(24.dp)
+            .clip(CircleShape)
+            .background(if (selected) ClayColors.Primary else Color.White.copy(alpha = 0.92f))
+            .border(
+                1.5.dp,
+                if (selected) ClayColors.Primary else ClayColors.MutedSoft,
+                CircleShape,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (selected) {
+            Icon(
+                MorphIcons.Check,
+                contentDescription = "已选中",
+                tint = Color.White,
+                modifier = Modifier.size(15.dp),
+            )
+        }
     }
+}
+
+/**
+ * 长按动作面板。
+ *
+ * 用底部 sheet 而不是 AlertDialog：选项行统一 20dp 左内边距、34dp 图标容器、
+ * 12dp 图文间距，标题和数值各占一列，删除单独分隔并置底。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProjectActionSheet(
+    project: ProjectSummary,
+    paletteLabel: String,
+    onDismiss: () -> Unit,
+    onFav: () -> Unit,
+    onDuplicate: () -> Unit,
+    onAlbum: () -> Unit,
+    onRename: () -> Unit,
+    onSelect: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+
+    // 先播完收起动画再执行动作；否则弹窗会在 sheet 还盖着屏幕时弹出来
+    fun closeThen(action: () -> Unit) {
+        scope.launch {
+            runCatching { sheetState.hide() }
+            onDismiss()
+            action()
+        }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = ClayColors.SurfaceCard,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        dragHandle = {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp, bottom = 4.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    Modifier
+                        .width(36.dp)
+                        .height(4.dp)
+                        .clip(CircleShape)
+                        .background(ClayColors.SurfaceStrong),
+                )
+            }
+        },
+    ) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ProjectThumb(project = project, size = 54)
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 12.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            project.name,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        if (project.fav) {
+                            Icon(
+                                MorphIcons.Star,
+                                contentDescription = "已收藏",
+                                tint = ClayColors.BrandOchre,
+                                modifier = Modifier
+                                    .padding(start = 5.dp)
+                                    .size(14.dp),
+                            )
+                        }
+                    }
+                    Text(
+                        buildString {
+                            append("${project.width}×${project.height} · $paletteLabel")
+                            append(" · ${project.pages} 页")
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ClayColors.Muted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            SheetActionRow(
+                icon = MorphIcons.Star,
+                label = if (project.fav) "取消收藏" else "收藏",
+                iconTint = if (project.fav) ClayColors.BrandOchre else ClayColors.BodyStrong,
+                iconBackground = if (project.fav) {
+                    ClayColors.BrandOchre.copy(alpha = 0.12f)
+                } else {
+                    ClayColors.SurfaceSoft
+                },
+                onClick = { closeThen(onFav) },
+            )
+            SheetActionRow(
+                icon = MorphIcons.FolderOpen,
+                label = "创建文件夹",
+                trailing = project.album.ifBlank { "未分组" },
+                onClick = { closeThen(onAlbum) },
+            )
+            SheetActionRow(
+                icon = MorphIcons.Copy,
+                label = "复制",
+                onClick = { closeThen(onDuplicate) },
+            )
+            SheetActionRow(
+                icon = MorphIcons.Type,
+                label = "重命名",
+                onClick = { closeThen(onRename) },
+            )
+            SheetActionRow(
+                icon = MorphIcons.CircleCheck,
+                label = "多选",
+                onClick = { closeThen(onSelect) },
+            )
+
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
+                thickness = 1.dp,
+                color = ClayColors.HairlineSoft,
+            )
+            SheetActionRow(
+                icon = MorphIcons.Trash,
+                label = "删除",
+                danger = true,
+                onClick = { closeThen(onDelete) },
+            )
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(top = 8.dp)
+                    .height(44.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(ClayColors.SurfaceSoft)
+                    .clickable(onClick = onDismiss),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "取消",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = ClayColors.BodyStrong,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SheetActionRow(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    trailing: String? = null,
+    danger: Boolean = false,
+    iconTint: Color = if (danger) MaterialTheme.colorScheme.error else ClayColors.BodyStrong,
+    iconBackground: Color = if (danger) {
+        MaterialTheme.colorScheme.error.copy(alpha = 0.09f)
+    } else {
+        ClayColors.SurfaceSoft
+    },
+) {
+    val labelColor = if (danger) MaterialTheme.colorScheme.error else ClayColors.BodyStrong
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(50.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(iconBackground),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = iconTint,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = labelColor,
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 12.dp),
+        )
+        if (trailing != null) {
+            Text(
+                trailing,
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                color = ClayColors.Muted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .padding(start = 8.dp)
+                    .widthIn(max = 140.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProjectThumb(project: ProjectSummary, size: Int) {
+    val thumb by rememberProjectThumb(project)
+    Box(
+        modifier = Modifier
+            .size(size.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center,
+    ) {
+        val bitmap = thumb
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit,
+            )
+        } else {
+            BeadDot(ClayColors.BrandMint)
+        }
+    }
+}
+
+@Composable
+private fun rememberProjectThumb(project: ProjectSummary) = produceState<ImageBitmap?>(
+    initialValue = null,
+    project.thumbnailPath,
+    project.updatedAt,
+) {
+    value = ThumbnailCache.load(project.thumbnailPath, project.updatedAt)
+}
+
+/** 专辑编辑框：单条和批量共用，已有专辑做成可点 chip，避免手打错字分出新组。 */
+@Composable
+private fun AlbumDialog(
+    title: String,
+    subtitle: String,
+    initial: String,
+    albums: List<String>,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var album by remember(initial) { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text(title)
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ClayColors.Muted,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+        },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = album,
+                    onValueChange = { album = it },
+                    singleLine = true,
+                    label = { Text("文件夹名（留空 = 未分组）") },
+                    shape = RoundedCornerShape(8.dp),
+                )
+                if (albums.isNotEmpty()) {
+                    Text(
+                        "已有文件夹",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ClayColors.Muted,
+                        modifier = Modifier.padding(top = Spacing.sm),
+                    )
+                    FlowRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+                        verticalArrangement = Arrangement.spacedBy(Spacing.xs),
+                    ) {
+                        albums.forEach { name ->
+                            ShChip(
+                                text = name,
+                                selected = album.trim() == name,
+                                onClick = { album = name },
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(album) }) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 /**

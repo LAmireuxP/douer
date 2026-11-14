@@ -91,6 +91,7 @@ fun ParamsScreen(vm: AppViewModel) {
             title = "参数设置",
             subtitle = "网格决定颗粒度，色卡决定能买到的豆子",
             modifier = Modifier.padding(top = Spacing.lg),
+            onBack = { vm.backFromParams() },
         )
 
         bitmap?.let {

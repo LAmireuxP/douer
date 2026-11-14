@@ -9,35 +9,6 @@ import kotlin.math.roundToInt
 class PixelCalibrationTest {
 
     @Test
-    fun `改列数时右边界不动`() {
-        val grid = PixelCalibration.Grid(10, 10, 5.0, 5.0, 2.0, 2.0)
-        val out = grid.withCols(20)
-        assertEquals(20, out.cols)
-        assertEquals(2.5, out.cellW, 0.0001)
-        assertEquals(grid.right, out.right, 0.0001)
-    }
-
-    @Test
-    fun `改行数时下边界不动`() {
-        val grid = PixelCalibration.Grid(10, 10, 5.0, 5.0, 2.0, 2.0)
-        val out = grid.withRows(4)
-        assertEquals(4, out.rows)
-        assertEquals(12.5, out.cellH, 0.0001)
-        assertEquals(grid.bottom, out.bottom, 0.0001)
-    }
-
-    @Test
-    fun `改单元格大小时覆盖范围不变`() {
-        val grid = PixelCalibration.Grid(10, 10, 5.0, 5.0, 2.0, 2.0)
-        val out = grid.withCellSize(10.0)
-        assertEquals(5, out.cols)
-        assertEquals(5, out.rows)
-        assertEquals(10.0, out.cellW, 0.0001)
-        assertEquals(grid.right, out.right, 0.0001)
-        assertEquals(grid.bottom, out.bottom, 0.0001)
-    }
-
-    @Test
     fun `平移网格只改偏移`() {
         val grid = PixelCalibration.Grid(10, 10, 5.0, 5.0, 2.0, 2.0)
         val out = grid.nudged(1.5, -0.5)
@@ -121,21 +92,6 @@ class PixelCalibrationTest {
         assertEquals(10.0, out.offsetX, 0.0001)
         assertEquals(12.0, out.offsetY, 0.0001)
         assertEquals(13.0, out.cellW, 0.0001)
-    }
-
-    @Test
-    fun `确认裁图时整张网格收进图像`() {
-        // 拖动把网格推到右下，确认时块长要压到能放下，偏移夹回图内。
-        val grid = PixelCalibration.Grid(56, 50, 13.0, 12.9, 101.2, 78.5)
-        val out = grid.fittedWithin(735, 658)
-        assertTrue(out.offsetX >= 0.0)
-        assertTrue(out.offsetY >= 0.0)
-        assertTrue(out.right <= 735.0 + 0.0001)
-        assertTrue(out.bottom <= 658.0 + 0.0001)
-        assertEquals(56, out.cols)
-        assertEquals(50, out.rows)
-        assertTrue(out.cellW <= 735.0 / 56)
-        assertTrue(out.cellH <= 658.0 / 50)
     }
 
     @Test

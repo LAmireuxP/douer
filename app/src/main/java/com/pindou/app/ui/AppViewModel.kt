@@ -16,18 +16,20 @@ import com.pindou.app.core.palette.BeadPalette
 import com.pindou.app.core.palette.PaletteAssets
 import com.pindou.app.core.build.ConstructionState
 import com.pindou.app.core.data.GridCodec
-import com.pindou.app.core.data.ProjectEntity
+import com.pindou.app.core.data.ProjectGridRepair
 import com.pindou.app.core.data.ProjectSummary
 import com.pindou.app.core.data.ProjectRepository
 import com.pindou.app.core.data.SettingsStore
 import com.pindou.app.core.editor.EditorEngine
 import com.pindou.app.core.editor.ColorReplaceOps
 import com.pindou.app.core.editor.PaletteOps
+import com.pindou.app.core.editor.ShapeTool
+import com.pindou.app.core.editor.SymmetryMode
 import com.pindou.app.core.image.CropRect
 import com.pindou.app.core.image.ImageTransforms
-import com.pindou.app.core.image.TransformedImage
 import com.pindou.app.core.chart.ChartRecognizer
 import com.pindou.app.core.pattern.GenerationStage
+import com.pindou.app.core.pattern.AiSubjectSegmenter
 import com.pindou.app.core.pattern.BpatCodec
 import com.pindou.app.core.pattern.GeneratorOptions
 import com.pindou.app.core.pattern.AutoTuner
@@ -38,6 +40,13 @@ import com.pindou.app.core.pattern.PixelCalibration
 import com.pindou.app.core.pattern.PixelArtDetector
 import com.pindou.app.core.pattern.PixelGridInspector
 import com.pindou.app.core.pattern.PixelImportPipeline
+import com.pindou.app.core.pattern.SubjectMask
+import com.pindou.app.core.studio.StudioCodec
+import com.pindou.app.core.studio.StudioEngine
+import com.pindou.app.core.studio.StudioFrame
+import com.pindou.app.core.studio.StudioLayer
+import com.pindou.app.ui.studio.StudioSession
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -53,7 +62,7 @@ import java.io.FileOutputStream
 
 /** 页面导航（线性流程，M5 引入项目库后再考虑导航库） */
 enum class Screen {
-    HOME, CROP, PARAMS, PREVIEW, EDITOR, CONSTRUCTION, CHART_CALIBRATE, PIXEL_CALIBRATE,
+    HOME, CROP, PARAMS, PREVIEW, EDITOR, STUDIO, CONSTRUCTION, CHART_CALIBRATE, PIXEL_CALIBRATE,
 }
 
 /**
@@ -65,7 +74,7 @@ enum class Screen {
 enum class HomeTab { LIBRARY, CREATE, SETTINGS }
 
 /** 编辑工具 */
-enum class EditorTool { NONE, PAINT, ERASE, PICKER, FILL, PAN }
+enum class EditorTool { NONE, PAINT, ERASE, PICKER, FILL, PAN, SHAPE }
 
 /** 裁剪选区模式：自由（网格跟随选区）或 1:1 正方形 */
 enum class CropAspectMode { FREE, SQUARE }
@@ -144,10 +153,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var chartAutoAligned by mutableStateOf(false)
         private set
+    /** 用户是否手动改过网格（列/行/格距/位置），用于底部状态标签 */
+    var chartManual by mutableStateOf(false)
+        private set
     var chartBusy by mutableStateOf(false)
         private set
     var chartRefineRunning by mutableStateOf(false)
         private set
+    private var chartRefineJob: Job? = null
+    /** 拖动时只保留最后一次采样；和像素校准一样先取消旧任务再防抖 */
+    private var chartSampleJob: Job? = null
+    private var chartRefineToken = 0
     /** 本次识别是否由自动检测得到的网格（false = 用了默认网格兜底） */
     var chartDetected by mutableStateOf(false)
         private set
@@ -156,6 +172,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** 裁剪框（工作图像素坐标系），null = 不在裁剪流程中 */
     var cropRect by mutableStateOf<CropRect?>(null)
         private set
+    private var cropReturn = Screen.HOME
 
     /**
      * 用户是否显式点过「原图」预设。
@@ -184,6 +201,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private var cropPreviewJob: Job? = null
     private var cropPreviewToken = 0
+    private var generationJob: Job? = null
+    private var autoTuneJob: Job? = null
 
     /**
      * 用户在裁剪页显式定过网格：裁剪完成后不再被「像素画原画网格」覆盖。
@@ -202,6 +221,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      * 项目库图纸编辑完再返回就会掉进一个没有源图、什么都不能做的参数页。
      */
     var previewReturn by mutableStateOf(Screen.HOME)
+        private set
+    /** 预览返回 HOME 时落在哪个首页 tab；null 按项目库处理。 */
+    var previewReturnTab by mutableStateOf<HomeTab?>(null)
         private set
 
     /** 预览页是否还允许回参数页调整（只有从参数页来的生成结果才有源图） */
@@ -272,19 +294,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var pixelAnalysisToken = 0
     /** 每次吸附自增；协程回来时 token 不同就丢弃结果，避免旧网格覆盖新网格 */
     private var pixelRefineToken = 0
-
-    /**
-     * 进入像素校准前保留原图和原裁剪框。
-     *
-     * 裁剪确认后会把工作图换成裁出来的小图；用户从校准页按返回时如果
-     * 只切 screen，画布会显示裁后图、裁剪框却按整图记录，第二次框选
-     * 必然错位。这里保存进入校准前的快照，返回时原样恢复。
-     */
-    private var pixelCropSourcePixels: IntArray? = null
-    private var pixelCropSourceW = 0
-    private var pixelCropSourceH = 0
-    private var pixelCropSourceRect: CropRect? = null
-
 
     // 项目库与设置
     private val repository = ProjectRepository(application)
@@ -402,11 +411,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     var libraryFavOnly by mutableStateOf(false)
     /** null = 全部；否则按专辑名过滤 */
     var libraryAlbum by mutableStateOf<String?>(null)
+    /** 项目库多选模式：为 true 时首页隐藏玻璃底栏，由项目库接管底部操作条 */
+    var librarySelecting by mutableStateOf(false)
 
     // 编辑器
     var editor by mutableStateOf<EditorEngine?>(null)
         private set
     var editorTool by mutableStateOf(EditorTool.NONE)
+    /** 从创建页「画像素」进入：编辑器顶栏显示模块名，不改变底层图纸模型 */
+    var pixelModuleActive by mutableStateOf(false)
+    /** 橡皮的「区域擦除」模式：点按整块 4 连通同色区域；拖动仍是方形橡皮 */
+    var editorEraseRegion by mutableStateOf(false)
+    /** 画笔/橡皮的镜像轴：关 / 水平 / 垂直 / 中心 */
+    var editorSymmetry by mutableStateOf(SymmetryMode.NONE)
+    /** 形状工具类型、是否填充、第一点（null = 等待起点） */
+    var editorShape by mutableStateOf(ShapeTool.LINE)
+    var editorShapeFilled by mutableStateOf(false)
+    var editorShapeStart by mutableStateOf<Int?>(null)
     var editorColor by mutableIntStateOf(0) // palette 索引
     /** 方形笔刷边长：1 / 3 / 5 格 */
     var editorBrushSize by mutableIntStateOf(1)
@@ -417,8 +438,68 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     var editorRevision by mutableIntStateOf(0)
         private set
 
+    // ---------- 画像素工作区（帧/图层/选区/动画） ----------
+
+    var studio by mutableStateOf<StudioSession?>(null)
+        private set
+    var studioProjectId by mutableStateOf<Long?>(null)
+        private set
+    private var studioSaving = false
+    /** 画像素返回键：true = 回预览，false = 回项目库。 */
+    private var studioExitToPreview = false
+    private var studioBackTab = HomeTab.LIBRARY
+
+    // AI 主体分割结果缓存：以源像素数组身份 + 尺寸为键。
+    // 生成一次后重复调参不再重新跑模型，避免每次调色都等几秒。
+    private var aiMaskKey: IntArray? = null
+    private var aiMaskW = 0
+    private var aiMaskH = 0
+    private var aiMask: SubjectMask? = null
+    var aiMaskStatus by mutableStateOf<String?>(null)
+        private set
+
     fun notifyEditorChanged() {
         editorRevision++
+    }
+
+    /**
+     * 取当前图的主体掩码，供生成管线裁边与去背景共用。
+     *
+     * 只在用户打开「AI 实验」开关时跑；模型缺失、设备不支持、GMS 不可用
+     * 都返回 null，管线自动落回原来的边界色算法，不阻塞生成。
+     */
+    private suspend fun prepareAiMask(): SubjectMask? {
+        if (!settings.aiSubjectEnabled) {
+            aiMaskStatus = null
+            return null
+        }
+        val pixels = imagePixels ?: return null
+        if (aiMaskKey === pixels && aiMaskW == imageW && aiMaskH == imageH) {
+            return aiMask
+        }
+        aiMaskStatus = "AI 正在识别主体…"
+        val bitmap = try {
+            Bitmap.createBitmap(pixels, imageW, imageH, Bitmap.Config.ARGB_8888)
+        } catch (e: Exception) {
+            aiMaskStatus = "AI 不可用，已回退传统算法"
+            return null
+        }
+        val mask = try {
+            AiSubjectSegmenter.segment(bitmap)
+        } finally {
+            bitmap.recycle()
+        }
+        if (mask == null) {
+            // 首次模型下载可能临时失败；不写缓存，下一次生成仍会重试。
+            aiMaskStatus = "AI 不可用，已回退传统算法"
+            return null
+        }
+        aiMaskKey = pixels
+        aiMaskW = imageW
+        aiMaskH = imageH
+        aiMask = mask
+        aiMaskStatus = "AI 主体识别完成"
+        return mask
     }
 
     /** 统一入口：选色后自动切回画笔，并记录最近使用 */
@@ -460,8 +541,65 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun palettesFor(beadSizeTag: String): List<BeadPalette> =
         palettes.filter { it.beadSize.name == beadSizeTag }
 
+    private data class DecodedImage(
+        val bitmap: Bitmap,
+        val pixels: IntArray,
+        val w: Int,
+        val h: Int,
+    )
+
+    /**
+     * SAF URI → Bitmap + ARGB。先解 bounds 决定采样率，最大边压到 2048。
+     *
+     * 注意：inJustDecodeBounds 时 decodeStream 必然返回 null，不能拿它的返回值
+     * 判断流是否打开；这里单独判断 InputStream。
+     */
+    private fun decodeImage(uri: Uri): DecodedImage {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        val boundsInput = openImageInput(uri) ?: error("无法读取图片")
+        boundsInput.use { BitmapFactory.decodeStream(it, null, bounds) }
+        require(bounds.outWidth > 0 && bounds.outHeight > 0) { "图片解码失败" }
+
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 2048) sample *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        val bmpInput = openImageInput(uri) ?: error("无法读取图片")
+        val bmp = bmpInput.use { BitmapFactory.decodeStream(it, null, opts) }
+            ?: error("图片解码失败")
+        val pixels = IntArray(bmp.width * bmp.height)
+        bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+        return DecodedImage(bmp, pixels, bmp.width, bmp.height)
+    }
+
+    /** MIUI 文件管理器对 openInputStream/openAssetFileDescriptor 支持不一致，两种都试。 */
+    private fun openImageInput(uri: Uri): java.io.InputStream? {
+        val resolver = getApplication<Application>().contentResolver
+        runCatching { resolver.openInputStream(uri) }
+            .onSuccess { if (it != null) return it }
+            .onFailure {
+                android.util.Log.e("PindouImage", "openInputStream failed", it)
+            }
+        runCatching { resolver.openAssetFileDescriptor(uri, "r")?.createInputStream() }
+            .onSuccess { if (it != null) return it }
+            .onFailure {
+                android.util.Log.e("PindouImage", "openAssetFileDescriptor failed", it)
+            }
+        return null
+    }
+
+    /** 换图/离开当前生成流程时，先把旧的后台生成停掉，避免旧结果落库。 */
+    private fun cancelGeneration() {
+        generationJob?.cancel()
+        generationJob = null
+        autoTuneJob?.cancel()
+        autoTuneJob = null
+        autoTuneRunning = false
+        if (genState is GenState.Running) genState = GenState.Idle
+    }
+
     /** Photo Picker / GetContent 回调：解码并限制最大边 2048 */
     fun onImagePicked(uri: Uri, pixelMode: Boolean = false) {
+        cancelGeneration()
         pendingCreationKind = if (pixelMode) {
             SettingsStore.CreationKind.PIXEL
         } else {
@@ -469,25 +607,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
-                val resolver = getApplication<Application>().contentResolver
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                // 注意：inJustDecodeBounds=true 时 decodeStream 返回 null（只填 bounds），
-                // 因此这里只关心流能否打开与 bounds 是否有效，不能拿 decode 返回值判失败
-                val boundsInput = resolver.openInputStream(uri) ?: error("无法读取图片")
-                boundsInput.use { BitmapFactory.decodeStream(it, null, bounds) }
-                require(bounds.outWidth > 0 && bounds.outHeight > 0) { "图片解码失败" }
-
-                var sample = 1
-                while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 2048) sample *= 2
-                val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-                val bmpInput = resolver.openInputStream(uri) ?: error("无法读取图片")
-                val bmp = bmpInput.use { BitmapFactory.decodeStream(it, null, opts) }
-                    ?: error("图片解码失败")
-
-                val pixels = IntArray(bmp.width * bmp.height)
-                bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
-                Triple(bmp, pixels, intArrayOf(bmp.width, bmp.height))
-            }.onSuccess { (bmp, pixels, size) ->
+                decodeImage(uri)
+            }.onSuccess { decoded ->
+                val bmp = decoded.bitmap
+                val pixels = decoded.pixels
+                val size = intArrayOf(decoded.w, decoded.h)
                 // 像素画检测放在导入线程里做（O(源像素)，200 条抽样线），
                 // 检测结果决定默认裁剪和默认网格，必须在进入裁剪页之前拿到。
                 val art = if (pixelMode) {
@@ -504,10 +628,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 pixelAnalysisJob?.cancel()
                 pixelAnalysisToken++
                 pixelAnalysisRunning = false
-                pixelCropSourcePixels = null
-                pixelCropSourceW = 0
-                pixelCropSourceH = 0
-                pixelCropSourceRect = null
                 // 像素画原图默认「无过滤」：不聚类、不限色，逐画像素直接映射
                 // 色卡，源图每一层淡粉/淡黄都能落成独立色号。照片维持中过滤。
                 filterLevel = if (pixelMode || art != null) FilterLevel.NONE else FilterLevel.MEDIUM
@@ -547,9 +667,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 // 裁剪页再叠一层格线只会让用户分不清该调哪一层。
                 syncCropGridToRect(cropRect!!)
                 if (pixelMode) {
-                    // 像素画流程：先裁剪圈定画布，确认后才校准。
-                    // 自动检测在这里只负责给出初始裁剪框；真正的网格在裁剪后的
-                    // 图上重新检测一次，避免整图上的背景留白把格宽算大。
+                    // 像素画流程不再经过「原图/自由/正方形」预选页：
+                    // 导入后直接进校准，整张图就是初始网格范围。
                     pixelCalibrated = false
                     pixelCalibration = null
                     pixelCalibrationDetected = false
@@ -557,8 +676,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     cropPreviewJob?.cancel()
                     cropPreview = null
                     cropPreviewRunning = false
-                    screen = Screen.CROP
+                    initPixelCalibration(pixels, size[0], size[1])
+                    withContext(Dispatchers.Main) {
+                        screen = Screen.PIXEL_CALIBRATE
+                    }
                 } else {
+                    cropReturn = Screen.HOME
                     screen = Screen.CROP
                     scheduleCropPreview()
                 }
@@ -628,6 +751,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         cropRect = CropRect.full(imageW, imageH)
         cropGridUserSet = false
         syncCropGridToRect(cropRect!!)
+        cropReturn = Screen.PARAMS
         screen = Screen.CROP
         scheduleCropPreview()
     }
@@ -878,6 +1002,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      */
     private suspend fun initPixelCalibration(pixels: IntArray, w: Int, h: Int) {
         pixelCalibrationSmart = true
+        // 每次新导入都从默认阈值开始：上一次把阈值拉高后，新图会
+        // 看起来「智能对齐开着但没反应」。需要更严格时用户再调高。
+        pixelCalibrationThreshold = PixelCalibration.DEFAULT_THRESHOLD
         // 冷启动直接导入时色卡可能还没加载完；没有色卡就没有最终预览，
         // 用户点「看图纸」会看到空页。这里先补一次，代价可忽略。
         if (selectedPalette == null) ensurePalettes()
@@ -968,42 +1095,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         syncCropGridToRect(rect)
         val isFull = rect.left <= 0f && rect.top <= 0f &&
             rect.right >= w.toFloat() && rect.bottom >= h.toFloat()
-        if (pixelArtMode) {
-            if (transformRunning) return
-            // 校准页的「返回」要回到这一屏的原图与原选框。校准确认会把
-            // imagePixels 换成裁后小图，不保存快照就只能退回一张被裁过的图，
-            // 选区坐标还按整图记，第二次框选必然错位。
-            pixelCropSourcePixels = pixels
-            pixelCropSourceW = w
-            pixelCropSourceH = h
-            pixelCropSourceRect = rect
-            launchTransform {
-                val cropped = if (isFull) {
-                    TransformedImage(pixels, w, h)
-                } else {
-                    ImageTransforms.crop(pixels, w, h, rect)
-                }
-                if (!isFull) {
-                    imagePixels = cropped.pixels
-                    imageW = cropped.width
-                    imageH = cropped.height
-                    rebuildPreview()
-                }
-                cropRect = CropRect.full(cropped.width, cropped.height)
-                cropPreviewJob?.cancel()
-                cropPreview = null
-                cropPreviewRunning = false
-                pixelCalibrated = false
-                pixelCalibration = null
-                pixelGridAnalysis = null
-                pixelCalibrationPreview = null
-                initPixelCalibration(cropped.pixels, cropped.width, cropped.height)
-                withContext(Dispatchers.Main) {
-                    screen = Screen.PIXEL_CALIBRATE
-                }
-            }
-            return
-        }
         if (isFull) {
             paramsFromCrop = true
             screen = Screen.PARAMS
@@ -1043,36 +1134,55 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * 网格位置微调：一次移动 1 个源图像素。
      *
-     * 网格始终整张收在图内（fittedWithin），页面上的线就是完成时裁的线；
-     * 之前允许滑出边缘，确认时再缩块长，用户会看到网格突然跳一下，
-     * 预览也跟着错位。
+     * 允许网格滑出图片边缘（至少保留一格重叠），这样拖动才能把网格
+     * 移到色块边界上。生成时 PixelImportPipeline 会按网格范围铺一张
+     * 等大的画布，边缘外的格子保持透明，和屏幕上看到的网格一致。
      */
     fun pixelCalibrationNudge(dx: Double, dy: Double) {
-        pixelCalibration = pixelCalibration?.nudged(dx, dy)?.fittedWithin(imageW, imageH)
+        val grid = pixelCalibration ?: return
+        val next = grid.nudged(dx, dy)
+        val minX = -(next.cols - 1) * next.cellW
+        val maxX = max(minX, imageW - next.cellW)
+        val minY = -(next.rows - 1) * next.cellH
+        val maxY = max(minY, imageH - next.cellH)
+        pixelCalibration = next.copy(
+            offsetX = next.offsetX.coerceIn(minX, maxX),
+            offsetY = next.offsetY.coerceIn(minY, maxY),
+        )
         pixelCalibrationApplied = false
         pixelCalibrationMethod = PixelGridInspector.Method.MANUAL
         schedulePixelGridAnalysis(delayMs = 40L)
     }
 
-    /** 改列数：右边界不动，格子自动变宽/变窄 */
+    /** 调整列数：格子大小、行数和位置都不动，网格整体变宽/变窄。 */
     fun pixelCalibrationSetCols(cols: Int) {
-        pixelCalibration = pixelCalibration?.withCols(cols)?.fittedWithin(imageW, imageH)
+        val old = pixelCalibration ?: return
+        val c = cols.coerceIn(PixelCalibration.MIN_COLS, PixelCalibration.MAX_COLS)
+        pixelCalibration = old.copy(cols = c)
         pixelCalibrationApplied = false
         pixelCalibrationMethod = PixelGridInspector.Method.MANUAL
         schedulePixelGridAnalysis()
     }
 
-    /** 改行数：下边界不动，适用于非等比缩放的像素画 */
+    /** 调整行数：格子大小、列数和位置都不动，网格整体变高/变矮。 */
     fun pixelCalibrationSetRows(rows: Int) {
-        pixelCalibration = pixelCalibration?.withRows(rows)?.fittedWithin(imageW, imageH)
+        val old = pixelCalibration ?: return
+        pixelCalibration = old.copy(
+            rows = rows.coerceIn(1, PixelCalibration.MAX_COLS),
+        )
         pixelCalibrationApplied = false
         pixelCalibrationMethod = PixelGridInspector.Method.MANUAL
         schedulePixelGridAnalysis()
     }
 
-    /** 改单元格边长：列/行数保持用户已经定好的值，只缩放格子本身 */
+    /** 调整一格大小：列数/行数不动，网格整体等比放大/缩小。 */
     fun pixelCalibrationSetCellSize(px: Float) {
-        pixelCalibration = pixelCalibration?.withCell(px.toDouble())?.fittedWithin(imageW, imageH)
+        val old = pixelCalibration ?: return
+        val target = px.toDouble().coerceIn(
+            PixelCalibration.MIN_CELL,
+            PixelCalibration.MAX_CELL,
+        )
+        pixelCalibration = old.copy(cellW = target, cellH = target)
         pixelCalibrationApplied = false
         pixelCalibrationMethod = PixelGridInspector.Method.MANUAL
         schedulePixelGridAnalysis()
@@ -1123,6 +1233,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             pixelRefineToken++
             pixelRefineRunning = false
             pixelCalibrationApplied = false
+            pixelCalibrationMethod = PixelGridInspector.Method.MANUAL
+            // 立即按当前手动网格重算预览，让「关掉」有可见结果，
+            // 也让后续「完成」严格使用屏幕上的线。
+            schedulePixelGridAnalysis(delayMs = 0L)
         }
     }
 
@@ -1163,7 +1277,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     pixelCalibrationScore = alignment.score
                     pixelCalibrationApplied = alignment.applied
                     if (applyToGrid && alignment.applied) {
-                        pixelCalibration = alignment.grid.fittedWithin(imageW, imageH)
+                        pixelCalibration = alignment.grid.withCompleteBlocks()
                         pixelCalibrationMethod = PixelGridInspector.Method.MANUAL
                         schedulePixelGridAnalysis(delayMs = 0L)
                     }
@@ -1205,9 +1319,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 ) { stage, progress ->
                     genState = GenState.Running(stage, progress)
                 }
-                val grid = conversion.grid
-                val cropped = conversion.cropped
-                val result = conversion.result
+                // 确认后落库/进编辑器的是收掉四周空格的那一份；
+                // conversion.result 仍是完整校准网格，供「看图纸」预览。
+                val grid = conversion.finalGrid
+                val cropped = conversion.finalCropped
+                val result = conversion.finalResult
                 val preview = Bitmap.createBitmap(
                     cropped.pixels, cropped.width, cropped.height, Bitmap.Config.ARGB_8888,
                 )
@@ -1234,10 +1350,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     pixelAnalysisRunning = false
                     pixelGridAnalysis = null
                     pixelCalibrationPreview = null
-                    pixelCropSourcePixels = null
-                    pixelCropSourceW = 0
-                    pixelCropSourceH = 0
-                    pixelCropSourceRect = null
                     adaptiveAnchor = 0
                     adaptiveScale = 1f
                     genState = GenState.Running(GenerationStage.DOWNSAMPLE, 0f)
@@ -1249,8 +1361,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     editor = EditorEngine(result.width, result.height, result.cells)
                     editorRevision++
                     editorTool = EditorTool.NONE
+                    editorEraseRegion = false
                     editorFromLibrary = false
                     previewReturn = Screen.HOME
+                    previewReturnTab = HomeTab.CREATE
                     toast = when {
                         aligned -> "已对齐 ${grid.cols}×${grid.rows}，进入编辑"
                         pixelCalibrationSmart -> "格线信号偏低，按手动网格生成 ${grid.cols}×${grid.rows}"
@@ -1374,18 +1488,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun generate() {
+        if (genState is GenState.Running || autoTuneRunning) return
         val pixels = imagePixels ?: return
         val palette = selectedPalette ?: return
+        val w = imageW
+        val h = imageH
+        if (w <= 0 || h <= 0 || pixels.size != w * h) {
+            lastError = "源图尺寸未就绪，请重新导入"
+            return
+        }
+        generationJob?.cancel()
         projectPages = emptyList()
         // 手动生成后清空自动优选结论
         autoTuneInfo = null
         autoTuneScores = emptyList()
         genState = GenState.Running(GenerationStage.DOWNSAMPLE, 0f)
-        viewModelScope.launch(Dispatchers.Default) {
+        generationJob = viewModelScope.launch(Dispatchers.Default) {
             try {
+                val options = currentOptions().copy(subjectMask = prepareAiMask())
                 val result = PatternGenerator.generate(
-                    pixels, imageW, imageH,
-                    currentOptions(),
+                    pixels, w, h,
+                    options,
                     palette,
                 ) { stage, progress ->
                     genState = GenState.Running(stage, progress)
@@ -1394,8 +1517,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 saveAfterGenerate(result)
                 withContext(Dispatchers.Main) {
                     previewReturn = Screen.PARAMS
+                    previewReturnTab = null
                     screen = Screen.PREVIEW
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 genState = GenState.Error(e.message ?: "生成失败")
             }
@@ -1428,17 +1554,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun autoTune() {
         val pixels = imagePixels ?: return
         val palette = selectedPalette ?: return
-        if (autoTuneRunning) return
+        if (autoTuneRunning || genState is GenState.Running) return
+        val w = imageW
+        val h = imageH
+        if (w <= 0 || h <= 0 || pixels.size != w * h) {
+            lastError = "源图尺寸未就绪，请重新导入"
+            return
+        }
+        autoTuneJob?.cancel()
         val base = currentOptions()
         projectPages = emptyList()
         autoTuneRunning = true
         autoTuneInfo = null
         autoTuneScores = emptyList()
         genState = GenState.Running(GenerationStage.DOWNSAMPLE, 0f)
-        viewModelScope.launch(Dispatchers.Default) {
+        autoTuneJob = viewModelScope.launch(Dispatchers.Default) {
             try {
+                val tunedBase = base.copy(subjectMask = prepareAiMask())
                 val outcome = AutoTuner.sweep(
-                    pixels, imageW, imageH, base, palette,
+                    pixels, w, h, tunedBase, palette,
                     // 像素画只比「无过滤」一档：聚类/限色都会把原画的离散色块
                     // 重新揉成过渡色，和"一比一还原画像素"目标相反。
                     levels = if (pixelArtGrid != null) {
@@ -1488,10 +1622,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 saveAfterGenerate(best.result)
                 // 停在参数页：逐档得分和结论要给人看见，自动跳预览等于把
                 // 刚算出来的对比信息扔掉。看完由用户点"查看图纸"进预览。
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 genState = GenState.Error(e.message ?: "自动优选失败")
             } finally {
-                autoTuneRunning = false
+                if (autoTuneJob === coroutineContext[Job]) {
+                    autoTuneRunning = false
+                    autoTuneJob = null
+                }
             }
         }
     }
@@ -1500,18 +1639,42 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun openPreview() {
         if (genState is GenState.Done) {
             previewReturn = Screen.PARAMS
+            previewReturnTab = null
             screen = Screen.PREVIEW
         }
     }
 
     fun backToHome() {
+        cancelGeneration()
+        homeTab = HomeTab.CREATE
         screen = Screen.HOME
         editor = null
         editorFromLibrary = false
     }
 
+    /** 参数页返回：从裁剪来就回裁剪，否则回创建页。 */
+    fun backFromParams() {
+        if (paramsFromCrop) {
+            paramsFromCrop = false
+            screen = Screen.CROP
+        } else {
+            backToHome()
+        }
+    }
+
+    /** 裁剪页返回：从参数页来就回参数页，初始导入则回创建页。 */
+    fun exitCrop() {
+        if (cropReturn == Screen.PARAMS) {
+            paramsFromCrop = true
+            screen = Screen.PARAMS
+        } else {
+            backToHome()
+        }
+    }
+
     fun selectHomeTab(tab: HomeTab) {
         homeTab = tab
+        librarySelecting = false
     }
 
     /** 预览返回上一步：从参数页来就回参数页，从项目库来就回项目库 */
@@ -1519,17 +1682,33 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         screen = previewReturn
         // 图纸保存后从预览退回首页时落在项目库，用户能立刻看到刚生成的作品；
         // 从参数页/校准页退回则保留在创建流程里，方便继续调参。
-        if (previewReturn == Screen.HOME) homeTab = HomeTab.LIBRARY
+        if (previewReturn == Screen.HOME) {
+            homeTab = previewReturnTab ?: HomeTab.LIBRARY
+        }
     }
 
     /** 系统返回键：按流程层级上退 */
     fun handleBack(): Boolean = when (screen) {
+        Screen.STUDIO -> {
+            exitStudio()
+            true
+        }
         Screen.CONSTRUCTION -> {
             exitConstruction()
             true
         }
         Screen.EDITOR -> {
-            finishEditor()
+            if (pixelModuleActive && currentProjectId == null) {
+                // 画像素模块还没保存：返回创建页，不往项目库里塞空白图纸
+                pixelModuleActive = false
+                editor = null
+                projectPages = emptyList()
+                genState = GenState.Idle
+                screen = Screen.HOME
+                homeTab = HomeTab.CREATE
+            } else {
+                exitEditor()
+            }
             true
         }
         Screen.PREVIEW -> {
@@ -1537,50 +1716,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             true
         }
         Screen.PARAMS -> {
-            screen = if (paramsFromCrop) Screen.CROP else Screen.HOME
-            paramsFromCrop = false
+            backFromParams()
             true
         }
         Screen.PIXEL_CALIBRATE -> {
             if (pixelCalibrationBusy) {
                 true
             } else {
-                val source = pixelCropSourcePixels
-                if (source != null && pixelCropSourceW > 0 && pixelCropSourceH > 0) {
-                    pixelAnalysisJob?.cancel()
-                    pixelAnalysisToken++
-                    pixelAnalysisRunning = false
-                    imagePixels = source
-                    imageW = pixelCropSourceW
-                    imageH = pixelCropSourceH
-                    cropRect = pixelCropSourceRect ?: CropRect.full(imageW, imageH)
-                    rebuildPreview()
-                    syncCropGridToRect(cropRect!!)
-                    pixelCalibration = null
-                    pixelCalibrationMethod = PixelGridInspector.Method.MANUAL
-                    pixelCalibrationDetected = false
-                    pixelCalibrationApplied = false
-                    pixelCalibrationScore = 0f
-                    pixelGridAnalysis = null
-                    pixelCalibrationPreview = null
-                    screen = Screen.CROP
-                } else if (imagePixels != null && cropRect != null) {
-                    // 没有快照说明不是从裁剪页进来的（例如旧项目直达校准）；
-                    // 保留当前图与原选框，仍然只退一层。
-                    screen = Screen.CROP
-                } else {
-                    homeTab = HomeTab.CREATE
-                    screen = Screen.HOME
-                }
+                homeTab = HomeTab.CREATE
+                screen = Screen.HOME
                 true
             }
         }
         Screen.CROP -> {
-            screen = Screen.HOME
+            exitCrop()
             true
         }
         Screen.CHART_CALIBRATE -> {
-            screen = Screen.HOME
+            backToHome()
             true
         }
         Screen.HOME -> false
@@ -1612,7 +1765,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             if (imagePreview != null && textSource == null) {
                 saveRefImage(id)
             } else {
-                repository.setRefPath(id, null)
+                repository.clearRefPath(id)
                 refBitmap = null
             }
             toast = "修改已保存"
@@ -1644,38 +1797,376 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 空白画布：直接创建空网格进编辑器 */
-    fun startBlankCanvas() {
+    /**
+     * 创建页「画像素」模块：进入独立工作区（帧 / 图层 / 选区 / 动画 / 导出）。
+     * 完成后把每帧拍平成一页存进项目库，同时写一份 sidecar 保留分层结构。
+     */
+    fun startPixelModule(width: Int, height: Int) {
         val palette = selectedPalette ?: return
-        pendingCreationKind = SettingsStore.CreationKind.BLANK
-        pixelArtMode = false
-        val w = gridW.coerceIn(5, 200)
-        val h = gridH.coerceIn(5, 200)
-        val cells = IntArray(w * h) { -1 }
-        genState = GenState.Done(PatternResult(w, h, cells, palette, 0))
-        projectPages = listOf(cells)
-        editor = EditorEngine(w, h, cells)
+        val w = width.coerceIn(5, 500)
+        val h = height.coerceIn(5, 500)
+        val engine = StudioCodec.blank(w, h, paletteArgbs(palette))
+        studio = StudioSession(
+            engine, palette, null, "画像素 ${w}×${h}",
+            initialToolX = settings.studioToolX,
+            initialToolY = settings.studioToolY,
+            initialColorX = settings.studioColorX,
+            initialColorY = settings.studioColorY,
+            initialToolCollapsed = settings.studioToolCollapsed,
+            initialColorCollapsed = settings.studioColorCollapsed,
+        )
+        studioProjectId = null
+        studioExitToPreview = false
+        studioBackTab = HomeTab.LIBRARY
         currentProjectId = null
-        projectName = "空白画布 ${w}×${h}"
+        projectName = "画像素 ${w}×${h}"
+        genState = GenState.Idle
+        editor = null
+        projectPages = emptyList()
         refBitmap = null
         showRefOverlay = false
-        editorTool = EditorTool.NONE
-        editorFromLibrary = false
-        editorRevision++
-        screen = Screen.EDITOR
+        imagePixels = null
+        imagePreview = null
+        textSource = null
+        pixelModuleActive = false
+        pendingCreationKind = SettingsStore.CreationKind.BLANK
+        pixelArtMode = true
+        screen = Screen.STUDIO
+    }
+
+    private fun paletteArgbs(palette: BeadPalette): IntArray =
+        IntArray(palette.colors.size) { palette.colors[it].argb }
+
+    private fun studioFile(id: Long): File =
+        File(getApplication<Application>().filesDir, "studio/project_$id.studio")
+
+    /**
+     * 把工作区落盘：每帧拍平后作为项目的一页，sidecar 保留完整图层树。
+     * 返回项目 id；失败返回 null 并把原因写进 lastError。
+     */
+    private suspend fun persistStudio(session: StudioSession): Long? = withContext(Dispatchers.IO) {
+        val engine = session.engine
+        val width = engine.width
+        val height = engine.height
+        val pages = engine.frames.indices.map { engine.composite(it) }
+        val pageLocks = pages.map { BooleanArray(width * height) }
+        val palette = session.palette
+        val existing = session.projectId
+        val id = if (existing == null) {
+            repository.importProject(
+                name = session.name.trim().ifBlank { "画像素" },
+                width = width,
+                height = height,
+                palette = palette,
+                pagesCells = pages,
+                pagesLocks = pageLocks,
+            ).also { session.projectId = it }
+        } else {
+            val flat = pages.reduce { acc, cur -> acc + cur }
+            val flatLocks = pageLocks.reduce { acc, cur -> acc + cur }
+            repository.updateCells(
+                id = existing,
+                width = width,
+                height = height,
+                cells = flat,
+                locked = flatLocks,
+                palette = palette,
+                pages = pages.size,
+            )
+            existing
+        }
+        val file = studioFile(id)
+        if (!StudioCodec.save(engine, file)) {
+            lastError = "分层工程保存失败：${file.absolutePath}"
+            return@withContext null
+        }
+        repository.setStudioPath(id, file.absolutePath)
+        id
+    }
+
+    /**
+     * 完成/返回画像素。默认存盘后去预览；[exitTo] = HOME 时回项目库。
+     * 新建且一笔没画的工作区直接丢弃，不往项目库塞空白图纸。
+     */
+    fun finishStudio(exitTo: Screen = Screen.PREVIEW) {
+        val session = studio ?: return
+        if (studioSaving) return
+        if (session.projectId == null && session.engine.revision == 0 && exitTo == Screen.HOME) {
+            studio = null
+            studioProjectId = null
+            homeTab = HomeTab.CREATE
+            screen = Screen.HOME
+            return
+        }
+        val isNew = session.projectId == null
+        studioSaving = true
+        viewModelScope.launch {
+            try {
+                val id = persistStudio(session) ?: return@launch
+                val pages = session.engine.frames.indices.map { session.engine.composite(it) }
+                val palette = session.palette
+                projectPages = pages
+                currentProjectId = id
+                studioProjectId = id
+                projectName = session.name
+                selectedPalette = palette
+                genState = GenState.Done(
+                    PatternResult(
+                        session.engine.width,
+                        session.engine.height,
+                        pages.first(),
+                        palette,
+                        0,
+                    ),
+                )
+                if (isNew) settingsStore.recordCreation(pendingCreationKind)
+                studio = null
+                studioProjectId = null
+                toast = "已保存到项目库"
+                if (exitTo == Screen.HOME) {
+                    homeTab = studioBackTab
+                    screen = Screen.HOME
+                } else {
+                    previewReturn = Screen.HOME
+                    previewReturnTab = HomeTab.LIBRARY
+                    screen = Screen.PREVIEW
+                }
+            } catch (e: Exception) {
+                lastError = "保存失败：${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                studioSaving = false
+            }
+        }
+    }
+
+    /** 顶栏返回 / 系统返回：按进入来源保存并退出，未落笔的新画布直接丢弃。 */
+    fun exitStudio() {
+        val session = studio ?: return
+        if (session.projectId == null && session.engine.revision == 0) {
+            studio = null
+            studioProjectId = null
+            homeTab = HomeTab.CREATE
+            screen = Screen.HOME
+            return
+        }
+        finishStudio(if (studioExitToPreview) Screen.PREVIEW else Screen.HOME)
+    }
+
+    /** 放弃当前画像素工作区（仅用于「不保存退出」）。 */
+    fun discardStudio() {
+        studio = null
+        studioProjectId = null
+        screen = Screen.HOME
+        homeTab = HomeTab.CREATE
+    }
+
+    fun setStudioPalette(palette: BeadPalette) {
+        val session = studio ?: return
+        if (session.palette.brand == palette.brand && session.palette.beadSize == palette.beadSize) return
+        session.palette = palette
+        session.engine.setPalette(paletteArgbs(palette))
+        session.color = session.color.coerceIn(0, palette.colors.size - 1)
+        session.secondaryColor = session.secondaryColor.coerceIn(0, palette.colors.size - 1)
+        session.touch()
+    }
+
+    /** 记录两块浮窗的自由位置（0..1 比例），拖完立即持久化。 */
+    fun setStudioRailPositions(toolX: Float, toolY: Float, colorX: Float, colorY: Float) {
+        val session = studio ?: return
+        session.toolX = toolX
+        session.toolY = toolY
+        session.colorX = colorX
+        session.colorY = colorY
+        settings = settings.copy(
+            studioToolX = toolX,
+            studioToolY = toolY,
+            studioColorX = colorX,
+            studioColorY = colorY,
+        )
+        viewModelScope.launch {
+            settingsStore.setStudioRailPositions(toolX, toolY, colorX, colorY)
+        }
+    }
+
+    fun setStudioRailCollapsed(toolCollapsed: Boolean, colorCollapsed: Boolean) {
+        val session = studio ?: return
+        session.toolCollapsed = toolCollapsed
+        session.colorCollapsed = colorCollapsed
+        settings = settings.copy(
+            studioToolCollapsed = toolCollapsed,
+            studioColorCollapsed = colorCollapsed,
+        )
+        viewModelScope.launch {
+            settingsStore.setStudioRailCollapsed(toolCollapsed, colorCollapsed)
+        }
+    }
+
+    fun resetStudioRailPositions() {
+        val session = studio ?: return
+        session.resetRailPositions()
+        settings = settings.copy(
+            studioToolX = -1f,
+            studioToolY = -1f,
+            studioColorX = -1f,
+            studioColorY = -1f,
+            studioToolCollapsed = false,
+            studioColorCollapsed = false,
+        )
+        viewModelScope.launch {
+            settingsStore.setStudioRailPositions(-1f, -1f, -1f, -1f)
+            settingsStore.setStudioRailCollapsed(false, false)
+        }
+    }
+
+    /**
+     * 普通图纸 → 画像素工程。
+     *
+     * 照片生成、像素画导入、文字图纸、旧项目都走这里：每页变成一帧、一层，
+     * 色卡/尺寸/格子原样保留。已经是 Studio 工程时优先读 sidecar，不重复拍平。
+     */
+    fun editInStudio() {
+        val palette = selectedPalette ?: return
+        val result = (genState as? GenState.Done)?.result
+        val editorPages = editor?.pages?.map { it.copyOf() }
+        val pages = editorPages ?: projectPages.ifEmpty {
+            result?.let { listOf(it.cells.copyOf()) } ?: return
+        }
+        if (pages.isEmpty()) return
+        val width = editor?.width ?: result?.width ?: return
+        val height = editor?.height ?: result?.height ?: return
+        if (pages.any { it.size != width * height }) return
+        val locks = editor?.locks?.map { it.copyOf() }
+        val id = currentProjectId
+        val name = projectName
+        val fromLibrary = editorFromLibrary
+        viewModelScope.launch {
+            // 从旧编辑器过来：先把当前未保存的笔画落库，再转 Studio。
+            if (editor != null && id != null) {
+                val flat = pages.reduce { acc, cur -> acc + cur }
+                val flatLocks = locks?.reduce { acc, cur -> acc + cur }
+                    ?: BooleanArray(flat.size)
+                runCatching {
+                    repository.updateCells(
+                        id = id,
+                        width = width,
+                        height = height,
+                        cells = flat,
+                        locked = flatLocks,
+                        palette = palette,
+                        pages = pages.size,
+                    )
+                }
+            }
+
+            var loaded: StudioEngine? = null
+            if (editor == null && id != null) {
+                val entity = repository.get(id)
+                val path = entity?.studioPath
+                if (path != null) {
+                    loaded = withContext(Dispatchers.IO) {
+                        StudioCodec.load(File(path), paletteArgbs(palette))
+                    }
+                }
+            }
+            val target = loaded ?: StudioEngine(
+                width,
+                height,
+                pages.mapIndexed { index, cells ->
+                    StudioFrame(
+                        mutableListOf(
+                            StudioLayer(
+                                if (pages.size == 1) "图层 1" else "第 ${index + 1} 页",
+                                cells.copyOf(),
+                            ),
+                        ),
+                    )
+                },
+                paletteArgb = paletteArgbs(palette),
+            )
+
+            if (id != null) {
+                withContext(Dispatchers.IO) {
+                    val file = studioFile(id)
+                    if (StudioCodec.save(target, file)) {
+                        repository.setStudioPath(id, file.absolutePath)
+                    }
+                }
+            }
+            projectPages = pages
+            currentProjectId = id
+            projectName = name
+            selectedPalette = palette
+            genState = GenState.Done(PatternResult(width, height, pages.first(), palette, 0))
+            editor = null
+            editorFromLibrary = false
+            studioProjectId = id
+            studio = StudioSession(
+                target, palette, id, name,
+                initialToolX = settings.studioToolX,
+                initialToolY = settings.studioToolY,
+                initialColorX = settings.studioColorX,
+                initialColorY = settings.studioColorY,
+                initialToolCollapsed = settings.studioToolCollapsed,
+                initialColorCollapsed = settings.studioColorCollapsed,
+            )
+            studioExitToPreview = !fromLibrary
+            studioBackTab = HomeTab.LIBRARY
+            screen = Screen.STUDIO
+        }
+    }
+
+    /** 画像素工程 → 普通图纸：拍平每帧为页，移除 sidecar，进入单层编辑器。 */
+    fun flattenStudioToEditor() {
+        val session = studio ?: return
+        viewModelScope.launch {
+            val id = persistStudio(session) ?: return@launch
+            val pages = session.engine.frames.indices.map { session.engine.composite(it) }
+            repository.setStudioPath(id, null)
+            withContext(Dispatchers.IO) {
+                runCatching { studioFile(id).delete() }
+            }
+            projectPages = pages
+            currentProjectId = id
+            projectName = session.name
+            selectedPalette = session.palette
+            genState = GenState.Done(
+                PatternResult(
+                    session.engine.width,
+                    session.engine.height,
+                    pages.first(),
+                    session.palette,
+                    0,
+                ),
+            )
+            editor = EditorEngine(session.engine.width, session.engine.height, pages)
+            editorRevision++
+            editorTool = EditorTool.NONE
+            editorEraseRegion = false
+            editorFromLibrary = true
+            studio = null
+            studioProjectId = null
+            toast = "已转为普通图纸（图层已拍平）"
+            screen = Screen.EDITOR
+        }
     }
 
     /** 文字拼豆：文字栅格化后走常规管线 */
-    fun generateFromText(text: String) {
+    fun generateFromText(text: String, width: Int? = null, height: Int? = null) {
         val palette = selectedPalette ?: return
         if (text.isBlank()) return
+        if (genState is GenState.Running || autoTuneRunning) return
+        generationJob?.cancel()
+        val w = (width ?: gridW).coerceIn(5, 200)
+        val h = (height ?: gridH).coerceIn(5, 200)
+        gridW = w
+        gridH = h
         pendingCreationKind = SettingsStore.CreationKind.TEXT
         textSource = text
         projectPages = emptyList()
         genState = GenState.Running(GenerationStage.DOWNSAMPLE, 0f)
-        viewModelScope.launch(Dispatchers.Default) {
+        generationJob = viewModelScope.launch(Dispatchers.Default) {
             try {
-                val bitmap = TextRasterizer.rasterize(text, gridW.coerceIn(5, 200), gridH.coerceIn(5, 200))
+                val bitmap = TextRasterizer.rasterize(text, w, h)
                 val pixels = IntArray(bitmap.width * bitmap.height)
                 bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
                 // 二值化：文字是"白底黑字"，抗锯齿在笔画边缘留了一圈过渡灰，
@@ -1702,12 +2193,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val result = PatternGenerator.generate(
                     pixels, bitmap.width, bitmap.height,
                     GeneratorOptions(
-                        gridW = gridW.coerceIn(5, 200),
-                        gridH = gridH.coerceIn(5, 200),
+                        gridW = w,
+                        gridH = h,
                         maxColors = if (limitColors) maxColors.coerceIn(1, 64) else null,
                         cleanupEnabled = true,
                         ditheringEnabled = false,
                         filterLevel = filterLevel,
+                        // 文字画布尺寸就是用户选的成品尺寸，不能再被自动取景裁掉白边
+                        autoFrame = false,
                     ),
                     palette,
                 ) { stage, progress ->
@@ -1717,8 +2210,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 saveAfterGenerate(result)
                 withContext(Dispatchers.Main) {
                     previewReturn = Screen.HOME
+                    previewReturnTab = HomeTab.CREATE
                     screen = Screen.PREVIEW
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 genState = GenState.Error(e.message ?: "文字生成失败")
             }
@@ -1727,62 +2223,101 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 打开已有项目（进入编辑器继续修改） */
     fun openProject(summary: ProjectSummary) {
+        cancelGeneration()
         viewModelScope.launch {
             try {
+                librarySelecting = false
+                pixelModuleActive = false
                 val entity = repository.get(summary.id)
                 if (entity == null) {
                     lastError = "打开失败：项目已不存在"
                     return@launch
                 }
                 // 色卡可能尚未加载完成：这里按需等待一次，避免点了没反应
-                var palette = palettes.firstOrNull { it.brand == entity.paletteBrand }
+                var palette = paletteFor(entity.paletteBrand, entity.beadSize)
                 if (palette == null) {
-                    val loaded = withContext(Dispatchers.IO) { PaletteAssets.loadAll(getApplication()) }
-                    if (loaded.isNotEmpty()) {
-                        palettes = loaded
-                        if (selectedPalette == null) {
-                            selectedPalette = loaded.firstOrNull { it.brand == "MARD" } ?: loaded.first()
-                        }
-                    }
-                    palette = loaded.firstOrNull { it.brand == entity.paletteBrand }
+                    // 已经有缓存就直接用；只有真正为空才回退到 assets 解析。
+                    ensurePalettes()
+                    palette = paletteFor(entity.paletteBrand, entity.beadSize)
                 }
                 if (palette == null) {
                     lastError = "打开失败：未找到色卡「${entity.paletteBrand}」，当前已载入 ${palettes.size} 套"
                     return@launch
                 }
                 val cells = GridCodec.decodeCells(entity.cells)
-                val pageLen = entity.width * entity.height
                 val pageCount = entity.pages.coerceAtLeast(1)
+                var gridWidth = entity.width
+                var gridHeight = entity.height
+                var pageLen = gridWidth * gridHeight
                 if (cells.size != pageLen * pageCount) {
-                    lastError = "打开失败：数据尺寸不符（${cells.size} vs ${pageLen * pageCount}）"
-                    return@launch
+                    val repaired = ProjectGridRepair.infer(
+                        entity.width, entity.height, cells.size, pageCount,
+                    )
+                    if (repaired == null) {
+                        lastError =
+                            "打开失败：数据尺寸不符（${cells.size} vs ${pageLen * pageCount}）"
+                        return@launch
+                    }
+                    gridWidth = repaired.width
+                    gridHeight = repaired.height
+                    pageLen = gridWidth * gridHeight
+                    withContext(Dispatchers.IO) {
+                        repository.repairSize(entity.id, gridWidth, gridHeight)
+                    }
+                    toast = "已修复旧项目尺寸为 ${gridWidth}×${gridHeight}"
                 }
                 val pages = chunkInts(cells, pageLen)
-                val lockPages = run {
-                    val flat = GridCodec.decodeLocks(entity.locked)
-                    if (flat.size == pageLen * pageCount) {
-                        chunkBooleans(flat, pageLen)
-                    } else {
-                        // 旧数据锁定长度不符：按无锁处理
-                        pages.map { BooleanArray(pageLen) }
+                // 项目库统一进画像素编辑器（新编辑页面）：
+                // 有 sidecar 就还原图层/帧，没有就按页建一层。
+                // 旧单层编辑器只保留在创建流程内部使用。
+                val studioPath = entity.studioPath
+                val loaded = if (studioPath != null) {
+                    withContext(Dispatchers.IO) {
+                        StudioCodec.load(File(studioPath), paletteArgbs(palette))
                     }
+                } else {
+                    null
                 }
-                val result = PatternResult(entity.width, entity.height, pages[0], palette, 0)
-                val engine = EditorEngine(entity.width, entity.height, pages, lockPages)
-                genState = GenState.Done(result)
-                projectPages = pages
-                refBitmap = entity.refPath?.let { path ->
-                    withContext(Dispatchers.IO) { runCatching { BitmapFactory.decodeFile(path) }.getOrNull() }
-                }
-                editor = engine
+                val studioEngine = loaded?.takeIf {
+                    it.width == gridWidth && it.height == gridHeight
+                } ?: StudioEngine(
+                    gridWidth,
+                    gridHeight,
+                    pages.mapIndexed { index, page ->
+                        StudioFrame(
+                            mutableListOf(
+                                StudioLayer(
+                                    if (pages.size == 1) "图层 1" else "第 ${index + 1} 页",
+                                    page.copyOf(),
+                                ),
+                            ),
+                        )
+                    },
+                    paletteArgb = paletteArgbs(palette),
+                )
+                studio = StudioSession(
+                    studioEngine, palette, entity.id, entity.name,
+                    initialToolX = settings.studioToolX,
+                    initialToolY = settings.studioToolY,
+                    initialColorX = settings.studioColorX,
+                    initialColorY = settings.studioColorY,
+                    initialToolCollapsed = settings.studioToolCollapsed,
+                    initialColorCollapsed = settings.studioColorCollapsed,
+                )
+                studioProjectId = entity.id
                 currentProjectId = entity.id
                 projectName = entity.name
+                projectPages = pages
+                genState = GenState.Done(
+                    PatternResult(gridWidth, gridHeight, pages.first(), palette, 0),
+                )
+                editor = null
                 selectedPalette = palette
-                editorRevision++
-                editorTool = EditorTool.NONE
-                editorFromLibrary = true
+                editorFromLibrary = false
                 lastError = null
-                screen = Screen.EDITOR
+                studioExitToPreview = false
+                studioBackTab = HomeTab.LIBRARY
+                screen = Screen.STUDIO
             } catch (e: Exception) {
                 lastError = "打开失败：${e.message ?: e.javaClass.simpleName}"
             }
@@ -1796,11 +2331,62 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** 批量删除：Repository 负责逐条清理缩略图 / 图层 sidecar */
+    fun deleteProjects(ids: Collection<Long>) {
+        if (ids.isEmpty()) return
+        val snapshot = ids.toList()
+        viewModelScope.launch {
+            try {
+                repository.deleteAll(snapshot)
+                if (currentProjectId in snapshot) currentProjectId = null
+                toast = "已删除 ${snapshot.size} 份图纸"
+            } catch (e: Exception) {
+                lastError = "批量删除失败：${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+    }
+
+    fun setFavProjects(ids: Collection<Long>, fav: Boolean) {
+        if (ids.isEmpty()) return
+        val snapshot = ids.toList()
+        viewModelScope.launch {
+            try {
+                repository.setFavAll(snapshot, fav)
+                toast = if (fav) {
+                    "已收藏 ${snapshot.size} 份图纸"
+                } else {
+                    "已取消收藏 ${snapshot.size} 份图纸"
+                }
+            } catch (e: Exception) {
+                lastError = "批量收藏失败：${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+    }
+
+    fun setAlbumProjects(ids: Collection<Long>, album: String) {
+        if (ids.isEmpty()) return
+        val snapshot = ids.toList()
+        viewModelScope.launch {
+            try {
+                repository.setAlbumAll(snapshot, album)
+                toast = if (album.isBlank()) {
+                    "已移出文件夹（${snapshot.size} 份）"
+                } else {
+                    "已放入文件夹「${album.trim()}」（${snapshot.size} 份）"
+                }
+            } catch (e: Exception) {
+                lastError = "批量放入文件夹失败：${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+    }
+
     fun renameProject(summary: ProjectSummary, newName: String) {
         viewModelScope.launch { repository.rename(summary.id, newName) }
     }
 
     fun startNewProject() {
+        cancelGeneration()
+        pixelModuleActive = false
         pendingCreationKind = SettingsStore.CreationKind.PHOTO
         currentProjectId = null
         projectName = "未命名图纸"
@@ -1825,8 +2411,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         pixelArtMode = false
         pixelArtGrid = null
         previewReturn = Screen.HOME
+        previewReturnTab = null
         cropAspectMode = CropAspectMode.FREE
         editorTool = EditorTool.NONE
+        editorEraseRegion = false
         editorFromLibrary = false
         pixelCalibration = null
         pixelCalibrated = false
@@ -1840,10 +2428,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         pixelAnalysisJob?.cancel()
         pixelAnalysisToken++
         pixelAnalysisRunning = false
-        pixelCropSourcePixels = null
-        pixelCropSourceW = 0
-        pixelCropSourceH = 0
-        pixelCropSourceRect = null
+        aiMaskKey = null
+        aiMask = null
+        aiMaskStatus = null
     }
 
     /** 当前文字拼豆的源文字（非 null = 文字模式）；改文字时更新 */
@@ -1851,25 +2438,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         private set
 
     /** 文字拼豆改文字内容后重新生成 */
-    fun regenerateFromText(text: String) {
+    fun regenerateFromText(text: String, width: Int? = null, height: Int? = null) {
         textSource = text
-        generateFromText(text)
+        generateFromText(text, width, height)
     }
 
-    /** 从预览进入编辑器：以当前结果初始化引擎（重新生成会重建） */
-    fun enterEditor() {
-        val result = (genState as? GenState.Done)?.result ?: return
-        editor = EditorEngine(result.width, result.height, projectPages.ifEmpty { listOf(result.cells) })
-        editorRevision++
-        editorTool = EditorTool.NONE
-        editorFromLibrary = false
-        screen = Screen.EDITOR
+    /**
+     * 从预览进入编辑器：统一走画像素工作区。
+     *
+     * 已生成 sidecar 的项目直接载入分层/帧结构；没有 sidecar 时把当前
+     * 预览结果转成 Studio 工程。原来的「在画像素中编辑」与「编辑图纸」
+     * 是同一个出口，现在只保留后者。
+     */
+    fun enterEditor() = editInStudio()
+
+    /** 顶栏「完成」：保存并进入图纸预览。 */
+    fun finishEditor() = finishEditorInternal(Screen.PREVIEW)
+
+    /**
+     * 返回键 / 顶栏返回：保存并回到进入编辑器的位置。
+     * 项目库打开的图纸回项目库；创建流程来的回预览。
+     */
+    fun exitEditor() {
+        val destination = if (editorFromLibrary) Screen.HOME else Screen.PREVIEW
+        finishEditorInternal(destination)
     }
 
-    /** 完成编辑：写回当前结果并持久化到项目库 */
-    fun finishEditor() {
+    /** 写回当前结果并持久化到项目库。 */
+    private fun finishEditorInternal(destination: Screen) {
         val engine = editor ?: return
         val current = (genState as? GenState.Done)?.result ?: return
+        val fromLibrary = editorFromLibrary
         val pages = engine.pages.map { it.copyOf() }
         // 编辑器里可能改过尺寸：以引擎当前尺寸为准重建结果
         val updated = if (engine.width != current.width || engine.height != current.height) {
@@ -1880,9 +2479,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         projectPages = pages
         genState = GenState.Done(updated)
         editor = null
-        if (editorFromLibrary) previewReturn = Screen.HOME
+        if (fromLibrary) {
+            previewReturn = Screen.HOME
+            previewReturnTab = HomeTab.LIBRARY
+        }
         editorFromLibrary = false
         editorTool = EditorTool.NONE
+        editorEraseRegion = false
         val id = currentProjectId
         if (id != null) {
             viewModelScope.launch {
@@ -1911,31 +2514,52 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 settingsStore.recordCreation(pendingCreationKind)
             }
         }
-        screen = Screen.PREVIEW
+        if (destination == Screen.HOME) {
+            homeTab = HomeTab.LIBRARY
+            screen = Screen.HOME
+        } else {
+            screen = destination
+        }
     }
 
     /** 进入施工模式（载入已保存的进度） */
     fun enterConstruction() {
         val result = (genState as? GenState.Done)?.result ?: return
         viewModelScope.launch {
+            val pages = currentPages().map { it.cells }.ifEmpty { listOf(result.cells) }
+            val pageCount = pages.size.coerceAtLeast(1)
+            val pageSize = result.width * result.height
+            val expectedSize = pageSize * pageCount
             val entity = currentProjectId?.let { repository.get(it) }
             // 编辑器改过尺寸后进度数组长度会失配：失配即作废旧进度、游标归零
-            val sizeOk = entity?.doneCells?.size == result.cells.size
-            val done = if (sizeOk) {
-                BooleanArray(entity!!.doneCells.size) { entity.doneCells[it] != 0.toByte() }
-            } else {
-                BooleanArray(result.cells.size)
+            val stored = entity?.doneCells
+            val validStored = stored != null && stored.size == expectedSize
+            val done = when {
+                validStored ->
+                    BooleanArray(expectedSize) { stored[it] != 0.toByte() }
+                // 旧多页项目可能只存了前 N 页：保留已有页，其余页从空白开始
+                stored != null && pageSize > 0 &&
+                    stored.size % pageSize == 0 && stored.size <= expectedSize ->
+                    BooleanArray(expectedSize).also { out ->
+                        for (i in stored.indices) out[i] = stored[i] != 0.toByte()
+                    }
+                else -> BooleanArray(expectedSize)
             }
             construction = ConstructionState(
                 width = result.width,
                 height = result.height,
                 done = done,
+                pages = pageCount,
                 orientation = if ((entity?.buildOrientation ?: 0) == 1) {
                     ConstructionState.Orientation.COLUMN
                 } else {
                     ConstructionState.Orientation.ROW
                 },
-                cursor = if (sizeOk) entity?.buildCursor ?: 0 else 0,
+                cursor = if (validStored) {
+                    (entity?.buildCursor ?: 0).coerceIn(0, (result.height - 1).coerceAtLeast(0))
+                } else {
+                    0
+                },
             )
             screen = Screen.CONSTRUCTION
         }
@@ -1989,8 +2613,30 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** 改尺寸：所有页内容居中保留 */
     fun resizeEditor(newWidth: Int, newHeight: Int) {
         val engine = editor ?: return
-        engine.resize(newWidth.coerceIn(5, 200), newHeight.coerceIn(5, 200))
+        engine.resize(newWidth.coerceIn(5, 500), newHeight.coerceIn(5, 500))
         notifyEditorChanged()
+    }
+
+    /** 编辑时裁剪：只保留 (left, top) 起的 w×h，所有页同步，可撤销 */
+    fun cropEditor(left: Int, top: Int, newWidth: Int, newHeight: Int) {
+        val engine = editor ?: return
+        val w = newWidth.coerceIn(5, 500)
+        val h = newHeight.coerceIn(5, 500)
+        if (left < 0 || top < 0) return
+        if (left + w > engine.width || top + h > engine.height) return
+        if (engine.crop(left, top, w, h)) notifyEditorChanged()
+    }
+
+    fun flipEditorHorizontal() {
+        if (editor?.flipHorizontal() == true) notifyEditorChanged()
+    }
+
+    fun flipEditorVertical() {
+        if (editor?.flipVertical() == true) notifyEditorChanged()
+    }
+
+    fun rotateEditor(clockwise: Boolean) {
+        if (editor?.rotate90(clockwise) == true) notifyEditorChanged()
     }
 
     /** 参考图叠加开关 */
@@ -2034,11 +2680,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         notifyEditorChanged()
         toast = "已换用「${newPalette.brandLabel}」色卡"
-    }
-
-    /** 合并相近色号（ΔE 阈值），整图替换并立即持久化 */
-    fun mergeSimilarEditorColors(maxDeltaE: Double) {
-        mergeSimilarEditorColorsWithReport(maxDeltaE)
     }
 
     /**
@@ -2256,11 +2897,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     return@launch
                 }
                 val loaded = ensurePalettes()
-                val palette = loaded.firstOrNull { it.brand == entity.paletteBrand } ?: loaded.first()
-                val pageLen = entity.width * entity.height
+                val palette = paletteFor(entity.paletteBrand, entity.beadSize) ?: loaded.first()
                 val cells = GridCodec.decodeCells(entity.cells)
                 val pageCount = entity.pages.coerceAtLeast(1)
-                require(cells.size == pageLen * pageCount) { "数据尺寸不符" }
+                var gridWidth = entity.width
+                var gridHeight = entity.height
+                var pageLen = gridWidth * gridHeight
+                if (cells.size != pageLen * pageCount) {
+                    val repaired = ProjectGridRepair.infer(
+                        entity.width, entity.height, cells.size, pageCount,
+                    ) ?: error("数据尺寸不符")
+                    gridWidth = repaired.width
+                    gridHeight = repaired.height
+                    pageLen = gridWidth * gridHeight
+                    repository.repairSize(entity.id, gridWidth, gridHeight)
+                }
                 val pages = chunkInts(cells, pageLen)
                 val locksFlat = GridCodec.decodeLocks(entity.locked)
                 val locks = if (locksFlat.size == pageLen * pageCount) {
@@ -2270,8 +2921,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 repository.importProject(
                     "${entity.name} 复刻",
-                    entity.width,
-                    entity.height,
+                    gridWidth,
+                    gridHeight,
                     palette,
                     pages,
                     locks,
@@ -2330,6 +2981,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 chartH = h
                 chartGrid = grid
                 chartDetected = detected != null
+                chartManual = false
                 chartAutoAligned = false
                 chartThreshold = 0.55f
                 chartSample = null
@@ -2349,21 +3001,33 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun chartSetCols(n: Int) {
         val g = chartGrid ?: return
+        chartRefineJob?.cancel()
+        chartRefineToken++
+        chartRefineRunning = false
         chartGrid = g.withCols(n)
+        chartManual = true
         chartAutoAligned = false
         resampleChart()
     }
 
     fun chartSetRows(n: Int) {
         val g = chartGrid ?: return
+        chartRefineJob?.cancel()
+        chartRefineToken++
+        chartRefineRunning = false
         chartGrid = g.withRows(n)
+        chartManual = true
         chartAutoAligned = false
         resampleChart()
     }
 
     fun chartSetCellSize(px: Float) {
         val g = chartGrid ?: return
+        chartRefineJob?.cancel()
+        chartRefineToken++
+        chartRefineRunning = false
         chartGrid = g.withCellSize(px.toDouble())
+        chartManual = true
         chartAutoAligned = false
         resampleChart()
     }
@@ -2371,10 +3035,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** 网格整体挪一格（不是一像素）：手指拖不准时用按钮对齐 */
     fun chartNudge(dx: Int, dy: Int) {
         val g = chartGrid ?: return
+        chartRefineJob?.cancel()
+        chartRefineToken++
+        chartRefineRunning = false
         chartGrid = g.copy(
             offsetX = g.offsetX + dx * g.cellW,
             offsetY = g.offsetY + dy * g.cellH,
         )
+        chartManual = true
         chartAutoAligned = false
         resampleChart()
     }
@@ -2382,7 +3050,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** 手指拖拽：按屏幕像素直接挪网格（换算在 UI 层做） */
     fun chartMoveBy(dx: Float, dy: Float) {
         val g = chartGrid ?: return
+        chartRefineJob?.cancel()
+        chartRefineToken++
+        chartRefineRunning = false
         chartGrid = g.copy(offsetX = g.offsetX + dx, offsetY = g.offsetY + dy)
+        chartManual = true
         chartAutoAligned = false
         resampleChart()
     }
@@ -2392,25 +3064,70 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         resampleChart()
     }
 
+    /** 色号图智能对齐开关：关闭必须立即生效，不能等下一次拖动。 */
+    fun chartSetSmart(enabled: Boolean) {
+        chartAutoAligned = enabled
+        if (enabled) {
+            chartRefine()
+        } else {
+            chartRefineJob?.cancel()
+            chartRefineToken++
+            chartRefineRunning = false
+        }
+    }
+
+    /** 重新跑一次自动识别；失败时保留当前网格，让用户继续手调。 */
+    fun chartRedetect() {
+        val px = chartPixels ?: return
+        val w = chartW
+        val h = chartH
+        if (w <= 0 || h <= 0) return
+        chartRefineJob?.cancel()
+        chartRefineToken++
+        chartRefineRunning = false
+        chartAutoAligned = false
+        chartBusy = true
+        viewModelScope.launch(Dispatchers.Default) {
+            val detected = ChartRecognizer.detect(px, w, h)
+            withContext(Dispatchers.Main) {
+                chartBusy = false
+                if (detected != null) {
+                    chartGrid = detected
+                    chartDetected = true
+                    chartManual = false
+                    toast = "已重新识别 ${detected.cols}×${detected.rows}"
+                    resampleChart(debounce = false)
+                } else {
+                    chartDetected = false
+                    toast = "没识别到网格，请手动调列数和格子大小"
+                }
+            }
+        }
+    }
+
     /** 智能对齐：在梯度曲线上把网格线贴到真实网格线上 */
     fun chartRefine() {
         val px = chartPixels ?: return
         val w = chartW
         val h = chartH
         val g = chartGrid ?: return
-        if (chartRefineRunning) return
+        chartRefineJob?.cancel()
+        val token = ++chartRefineToken
         chartRefineRunning = true
-        viewModelScope.launch(Dispatchers.Default) {
+        chartRefineJob = viewModelScope.launch(Dispatchers.Default) {
             try {
                 val refined = ChartRecognizer.refine(px, w, h, g)
                 withContext(Dispatchers.Main) {
+                    if (token != chartRefineToken) return@withContext
                     chartGrid = refined
+                    chartManual = false
                     chartAutoAligned = true
-                    toast = "已按网格线对齐"
                 }
                 resampleChart()
             } finally {
-                withContext(Dispatchers.Main) { chartRefineRunning = false }
+                withContext(Dispatchers.Main) {
+                    if (token == chartRefineToken) chartRefineRunning = false
+                }
             }
         }
     }
@@ -2426,12 +3143,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val w = chartW
         val h = chartH
         val th = chartThreshold
+        chartSampleJob?.cancel()
         chartToken++
         val token = chartToken
-        chartBusy = true
-        viewModelScope.launch(Dispatchers.Default) {
-            if (debounce) delay(90)
+        // 拖动中不立刻切 busy：否则顶栏进度条每一帧开关一次，布局高度
+        // 跟着变，pointerInput 会被重启，手感就是「咔咔」的。
+        if (!debounce) chartBusy = true
+        chartSampleJob = viewModelScope.launch(Dispatchers.Default) {
+            if (debounce) delay(40)
             if (token != chartToken) return@launch
+            withContext(Dispatchers.Main) {
+                if (token == chartToken) chartBusy = true
+            }
             val sample = ChartRecognizer.sample(px, w, h, g, th)
             withContext(Dispatchers.Main) {
                 if (token != chartToken) return@withContext
@@ -2458,6 +3181,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 saveAfterGenerate(result)
                 withContext(Dispatchers.Main) {
                     previewReturn = Screen.CHART_CALIBRATE
+                    previewReturnTab = null
                     screen = Screen.PREVIEW
                 }
             } catch (e: Exception) {
@@ -2481,6 +3205,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         return loaded
     }
+
+    private fun paletteFor(brand: String, beadSizeTag: String): BeadPalette? =
+        PaletteAssets.pick(palettes, brand, beadSizeTag)
 
     private fun chunkInts(arr: IntArray, size: Int): List<IntArray> =
         List((arr.size + size - 1) / size) { i ->

@@ -22,8 +22,8 @@ android {
         applicationId = "com.pindou.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 19
-        versionName = "1.2.4"
+        versionCode = 20
+        versionName = "1.3"
     }
 
     signingConfigs {
@@ -83,6 +83,7 @@ dependencies {
     implementation(libs.compose.ui.tooling.preview)
     implementation(libs.compose.material3)
     implementation(libs.haze)
+    implementation(libs.mlkit.subject.segmentation)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)

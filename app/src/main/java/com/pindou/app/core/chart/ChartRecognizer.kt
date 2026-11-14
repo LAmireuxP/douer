@@ -57,28 +57,39 @@ object ChartRecognizer {
         val offsetX: Double,
         val offsetY: Double,
     ) {
-        /** 改列数：保持网格总宽度不变，格子跟着变宽/变窄 */
+        /** 改列数：格子大小不变，网格整体变宽/变窄，始终是正方形格 */
         fun withCols(n: Int): ChartGrid {
             val c = n.coerceIn(3, MAX_COLS)
-            return copy(cols = c, cellW = cellW * cols / c)
+            return copy(cols = c, cellH = cellW)
         }
 
-        /** 改行数：保持总高度不变 */
+        /** 改行数：格子大小不变，网格整体变高/变矮 */
         fun withRows(n: Int): ChartGrid {
             val r = n.coerceIn(3, MAX_COLS)
-            return copy(rows = r, cellH = cellH * rows / r)
+            return copy(rows = r, cellH = cellW)
         }
 
-        /** 改单元格边长：列数反向推导，网格右边界不动 */
+        /** 改单元格边长：列/行数不动，cellW 与 cellH 同步，保持正方形 */
         fun withCellSize(px: Double): ChartGrid {
-            val w = px.coerceIn(MIN_CELL, 512.0)
-            val h = px.coerceIn(MIN_CELL, 512.0)
-            val n = (cols * cellW / w).roundToInt().coerceIn(3, MAX_COLS)
-            val m = (rows * cellH / h).roundToInt().coerceIn(3, MAX_COLS)
-            return ChartGrid(n, m, cols * cellW / n, rows * cellH / m, offsetX, offsetY)
+            val size = px.coerceIn(MIN_CELL, 512.0)
+            return copy(cellW = size, cellH = size)
         }
 
         fun nudged(dx: Double, dy: Double): ChartGrid = copy(offsetX = offsetX + dx, offsetY = offsetY + dy)
+
+        /**
+         * 把列/行补到 5 的整数倍。
+         *
+         * 色号图的面板按 5×5 大格生产；首次识别如果停在 43 列，最右
+         * 一列就是半个大格。这里只向右/向下补空格，不移动已有格子，
+         * 保证已识别的内容不丢、5×5 框完整。
+         */
+        fun withCompleteBlocks(block: Int = 5): ChartGrid {
+            if (block <= 1) return this
+            val c = ((cols + block - 1) / block) * block
+            val r = ((rows + block - 1) / block) * block
+            return if (c == cols && r == rows) this else copy(cols = c, rows = r)
+        }
     }
 
     /** 采样结果：argb 为每格众数色，empty 为空格标记 */
@@ -97,8 +108,19 @@ object ChartRecognizer {
         if (w < 48 || h < 48) return null
         val px = profile(pixels, w, h, vertical = true)
         val py = profile(pixels, w, h, vertical = false)
-        val ax = fitAxis(findPeaks(px), w) ?: return null
-        val ay = fitAxis(findPeaks(py), h) ?: return null
+        val ax0 = fitAxis(findPeaks(px), w)
+        val ay0 = fitAxis(findPeaks(py), h)
+        if (ax0 == null && ay0 == null) return null
+        // 色号文字会在横向梯度上产生大量 16/24px 的假峰；只要一个方向
+        // 找到了可信的 40/50px 格距，另一方向就直接用它求相位。
+        val ax = ax0 ?: fitAxisWithPitch(px, w, ay0!!.pitch, ay0.count) ?: return null
+        val ay = if (ay0 == null ||
+            abs(ay0.pitch - ax.pitch) / max(ax.pitch, ay0.pitch) > 0.15f
+        ) {
+            fitAxisWithPitch(py, h, ax.pitch, ax.count) ?: ay0 ?: return null
+        } else {
+            ay0
+        }
         if (ax.pitch < MIN_CELL || ay.pitch < MIN_CELL) return null
         if (ax.count !in 3..MAX_COLS || ay.count !in 3..MAX_COLS) return null
         // 横竖格子边长差距过大，说明锁错了（一个是小字笔画、一个是真网格）
@@ -113,7 +135,8 @@ object ChartRecognizer {
         )
         // 网格线是周期性的：offset 和 offset+pitch 给出同一组线，靠几何分不出来。
         // 用内容边界收口——四周整行整列都是空格就裁掉，避免图纸左边多出一条空列。
-        return trimToContent(pixels, w, h, raw)
+        // 收口后再补到 5 的整数倍：首次识别就让每个 5×5 大格完整。
+        return trimToContent(pixels, w, h, raw).withCompleteBlocks()
     }
 
     /**
@@ -282,6 +305,35 @@ object ChartRecognizer {
         return Axis(pitch, o, count)
     }
 
+    /**
+     * 已知格距求另一方向的最佳相位。
+     *
+     * 色号文字比网格线更容易在梯度曲线上形成局部峰；一旦某一方向已经
+     * 锁定真实格距，另一方向不再重新估格距，只在 0..pitch 内扫相位，
+     * 用整排网格线的平均梯度选出真正压住格线的偏移。
+     */
+    private fun fitAxisWithPitch(
+        p: FloatArray,
+        len: Int,
+        pitch: Double,
+        count: Int,
+    ): Axis? {
+        if (pitch < MIN_CELL || count < 3) return null
+        var bestOff = 0.0
+        var bestScore = Double.NEGATIVE_INFINITY
+        var off = 0.0
+        while (off < pitch) {
+            val s = scoreAxis(p, pitch, off, count)
+            if (s > bestScore) {
+                bestScore = s
+                bestOff = off
+            }
+            off += 0.25
+        }
+        if (bestScore == Double.NEGATIVE_INFINITY) return null
+        return Axis(pitch, bestOff, count)
+    }
+
     /** 列（行）方向的梯度曲线：网格线在曲线上一柱擎天，格内渐变小 */
     private fun profile(pixels: IntArray, w: Int, h: Int, vertical: Boolean): FloatArray {
         val len = if (vertical) w else h
@@ -390,6 +442,15 @@ object ChartRecognizer {
             val iy0 = (y0 + grid.cellH * 0.20).roundToInt().coerceIn(0, h - 1)
             val iy1 = (y1 - grid.cellH * 0.20).roundToInt().coerceIn(iy0 + 1, h)
             for (col in 0 until cols) {
+                val idx = row * cols + col
+                // 补出来的空格可能落在图片外：中心点不在图内就直接判空，
+                // 不能拿边缘像素反复采样，否则会把纸边颜色当成新内容。
+                val centerX = grid.offsetX + (col + 0.5) * grid.cellW
+                val centerY = grid.offsetY + (row + 0.5) * grid.cellH
+                if (centerX < 0.0 || centerX >= w || centerY < 0.0 || centerY >= h) {
+                    empty[idx] = true
+                    continue
+                }
                 val x0 = grid.offsetX + col * grid.cellW
                 val ixc0 = (x0 + grid.cellW * 0.20).roundToInt().coerceIn(0, w - 1)
                 val ixc1 = (x0 + grid.cellW * 0.80).roundToInt().coerceIn(ixc0 + 1, w)
@@ -436,7 +497,6 @@ object ChartRecognizer {
                     y += stride
                 }
 
-                val idx = row * cols + col
                 if (pixelCount == 0) {
                     empty[idx] = true
                     continue
@@ -476,10 +536,12 @@ object ChartRecognizer {
         return ChartSample(cols, rows, argb, empty, paper, filled)
     }
 
-    /** 纸白：取四角 8% 区域里出现最多的颜色，避开中间大片图案 */
+    /** 纸白：取四角最外圈约 1% 区域里出现最多的颜色，避开中间大片图案 */
     fun paperColor(pixels: IntArray, w: Int, h: Int): Int {
-        val bw = max(2, w / 12)
-        val bh = max(2, h / 12)
+        // 只扫最外圈约 1%：色号图补 5×5 空格时，补出来的格子可能
+        // 落在图片白边上，纸白取错会把白边当成一颗颗实心豆。
+        val bw = max(2, minOf(w, h) / 100)
+        val bh = bw
         val counts = HashMap<Int, Int>()
         fun scan(x0: Int, y0: Int, x1: Int, y1: Int) {
             var y = y0

@@ -23,4 +23,19 @@ object PaletteAssets {
                 context.assets.open("$DIR/$file").bufferedReader().use { PaletteJson.parse(it.readText()) }
             }.getOrNull()
         }
+
+    /**
+     * 同品牌可能有多套色卡（Artkal S 5mm / Artkal Mini 2.6mm）。
+     * 只按 brand 取第一套会把小豆项目装进大豆色卡，格子索引越界直接崩预览；
+     * 优先 brand + beadSize，找不到再退回 brand。
+     */
+    fun pick(
+        palettes: List<BeadPalette>,
+        brand: String,
+        beadSizeTag: String,
+    ): BeadPalette? {
+        val size = BeadSize.fromTag(beadSizeTag)
+        return palettes.firstOrNull { it.brand == brand && it.beadSize == size }
+            ?: palettes.firstOrNull { it.brand == brand }
+    }
 }

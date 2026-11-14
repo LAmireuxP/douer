@@ -3,7 +3,6 @@ package com.pindou.app.core.pattern
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
 
 /**
  * 像素画导入时的网格校准。
@@ -30,7 +29,14 @@ object PixelCalibration {
      * 理论上限，真实像素画只有 6% 左右，滑条上的 6% 对用户没有任何含义。
      * 现在分数按剖面 99 分位归一化，30% 就是「明显比噪声强」。
      */
-    const val DEFAULT_THRESHOLD = 0.30f
+    /**
+     * 默认吸附阈值。
+     *
+     * 像素画经过截图/JPEG 压缩后，格线梯度会被整体压低；0.30 在真实
+     * 素材上经常一条线都够不到，开关开着却完全不吸附。0.05 是滑条
+     * 的最小值，先让智能对齐默认做一次小幅吸附，用户再按需调高。
+     */
+    const val DEFAULT_THRESHOLD = 0.05f
 
     /**
      * 一张像素画的采样网格。
@@ -50,54 +56,21 @@ object PixelCalibration {
         val right: Double get() = offsetX + cols * cellW
         val bottom: Double get() = offsetY + rows * cellH
 
-        /** 改列数：右边界不动，格子跟着变宽/变窄 */
-        fun withCols(n: Int): Grid {
-            val c = n.coerceIn(MIN_COLS, MAX_COLS)
-            if (c == cols) return this
-            return copy(cols = c, cellW = (cols * cellW / c).coerceIn(MIN_CELL, MAX_CELL))
-        }
-
-        /** 改行数：下边界不动 */
-        fun withRows(n: Int): Grid {
-            val r = n.coerceIn(MIN_COLS, MAX_COLS)
-            if (r == rows) return this
-            return copy(rows = r, cellH = (rows * cellH / r).coerceIn(MIN_CELL, MAX_CELL))
-        }
-
-        /** 改单元格边长：网格覆盖范围不变，列/行数反向推导 */
-        fun withCellSize(px: Double): Grid {
-            val size = px.coerceIn(MIN_CELL, MAX_CELL)
-            val c = (cols * cellW / size).roundToInt().coerceIn(MIN_COLS, MAX_COLS)
-            val r = (rows * cellH / size).roundToInt().coerceIn(MIN_COLS, MAX_COLS)
-            return Grid(
-                cols = c,
-                rows = r,
-                cellW = (cols * cellW / c).coerceIn(MIN_CELL, MAX_CELL),
-                cellH = (rows * cellH / r).coerceIn(MIN_CELL, MAX_CELL),
-                offsetX = offsetX,
-                offsetY = offsetY,
-            )
-        }
-
-        /**
-         * 改单元格边长（校准页的「3.单元格大小」）。
-         *
-         * 与 [withCellSize] 不同：列/行数不动，只缩放格子。校准页的操作
-         * 顺序是「先定列数，再让格子边长贴住图片边缘」，如果这里反过来
-         * 改列数，用户刚调好的 60 列会跳成 58 列。横纵比保留，非等比
-         * 缩放的源图不会被强行拉成正方格。
-         */
-        fun withCell(px: Double): Grid {
-            val size = px.coerceIn(MIN_CELL, MAX_CELL)
-            val ratio = if (cellW > 1e-6) cellH / cellW else 1.0
-            return copy(
-                cellW = size,
-                cellH = (size * ratio).coerceIn(MIN_CELL, MAX_CELL),
-            )
-        }
-
         fun nudged(dx: Double, dy: Double): Grid =
             copy(offsetX = offsetX + dx, offsetY = offsetY + dy)
+
+        /**
+         * 把列/行补到 5 的整数倍，格子大小和原点不动。
+         *
+         * 像素画首次识别可能停在 32×32；补到 35×35 后最右/最下的
+         * 5×5 大格才完整。补出的格子在图外，转换时按空白处理。
+         */
+        fun withCompleteBlocks(block: Int = 5): Grid {
+            if (block <= 1) return this
+            val c = ((cols + block - 1) / block) * block
+            val r = ((rows + block - 1) / block) * block
+            return if (c == cols && r == rows) this else copy(cols = c, rows = r)
+        }
 
         /**
          * 把网格收敛到图像范围内。
@@ -116,21 +89,6 @@ object PixelCalibration {
             return copy(cellW = cw, cellH = ch, offsetX = ox, offsetY = oy)
         }
 
-        /**
-         * 整张网格收进图像内，供确认时裁图使用。
-         *
-         * 拖动时允许网格滑出边缘，确认时必须裁到图内：先按列/行把块长
-         * 压到能放下，再夹偏移。这样裁出的宽高就是网格宽高，采样偏移
-         * 归零后不会错位。
-         */
-        fun fittedWithin(imgW: Int, imgH: Int): Grid {
-            require(imgW > 0 && imgH > 0) { "图片尺寸非法: ${imgW}x$imgH" }
-            val cw = (min(cellW, imgW.toDouble() / cols)).coerceIn(MIN_CELL, MAX_CELL)
-            val ch = (min(cellH, imgH.toDouble() / rows)).coerceIn(MIN_CELL, MAX_CELL)
-            val ox = offsetX.coerceIn(0.0, (imgW - cols * cw).coerceAtLeast(0.0))
-            val oy = offsetY.coerceIn(0.0, (imgH - rows * ch).coerceAtLeast(0.0))
-            return copy(cellW = cw, cellH = ch, offsetX = ox, offsetY = oy)
-        }
     }
 
     /** 自动对齐结果；[applied] = false 表示格线信号低于阈值，保留原网格 */

@@ -2,6 +2,8 @@ package com.pindou.app.core.editor
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -173,8 +175,13 @@ class EditorEngineTest {
         assertEquals(25, e.cells.size)
         assertEquals(5, e.cells[2 * 5 + 2]) // (1,1) 平移到 (2,2)
         e.undo()
+        assertEquals(3, e.width)
+        assertEquals(3, e.height)
         assertEquals(9, e.cells.size)
         assertEquals(5, e.cells[4])
+        e.redo()
+        assertEquals(5, e.width)
+        assertEquals(5, e.height)
     }
 
     @Test
@@ -261,6 +268,126 @@ class EditorEngineTest {
         assertEquals(3, e.connectedRegionSize(0))
         assertFalse(e.canUndo)
         assertEquals(0, e.revision)
+    }
+
+    // ---- 区域擦除 ----
+
+    @Test
+    fun `区域擦除只清同色连通块并一次撤销`() {
+        // 1 1 2
+        // 1 2 2
+        // 3 3 2
+        val e = EditorEngine(3, 3, intArrayOf(1, 1, 2, 1, 2, 2, 3, 3, 2))
+        assertTrue(e.eraseRegion(0))
+        assertEquals(3, e.cells.count { it == -1 })
+        assertEquals(0, e.cells.count { it == 1 })
+        assertEquals(4, e.cells.count { it == 2 })
+        assertEquals(3, e.cells[6])
+        e.undo()
+        assertEquals(3, e.cells.count { it == 1 })
+        assertFalse(e.canUndo)
+    }
+
+    @Test
+    fun `区域擦除跳过锁定格与空格`() {
+        val e = EditorEngine(3, 3, IntArray(9) { 4 })
+        e.setLocked(1, true)
+        assertTrue(e.eraseRegion(0))
+        assertEquals(4, e.cells[1])
+        assertEquals(8, e.cells.count { it == -1 })
+        assertFalse(EditorEngine(2, 2, IntArray(4) { -1 }).eraseRegion(0))
+    }
+
+    // ---- 裁剪 ----
+
+    @Test
+    fun `裁剪按矩形取多页内容并保持锁定`() {
+        // 4×3: 每行 10,20,30,40 / 11,21,31,41 / 12,22,32,42
+        val page0 = IntArray(12) { 10 + (it / 4) + (it % 4) * 10 }
+        val page1 = IntArray(12) { it }
+        val locks0 = BooleanArray(12).also { it[5] = true } // (1,1)
+        val e = EditorEngine(4, 3, listOf(page0, page1), listOf(locks0, BooleanArray(12)))
+        assertTrue(e.crop(1, 1, 2, 2))
+        assertEquals(2, e.width)
+        assertEquals(2, e.height)
+        assertArrayEquals(intArrayOf(21, 31, 22, 32), e.pages[0])
+        assertArrayEquals(intArrayOf(5, 6, 9, 10), e.pages[1])
+        assertTrue(e.locks[0][0])
+        assertEquals(1, e.locks[0].count { it })
+        e.undo()
+        assertEquals(4, e.width)
+        assertEquals(3, e.height)
+        assertEquals(12, e.cells.size)
+        assertEquals(10, e.cells[0])
+        e.redo()
+        assertEquals(2, e.width)
+        assertEquals(2, e.height)
+    }
+
+    @Test
+    fun `裁剪边界校验与无变化返回 false`() {
+        val e = EditorEngine(3, 3, IntArray(9) { -1 })
+        assertFalse(e.crop(0, 0, 3, 3))
+        assertThrows(IllegalArgumentException::class.java) { e.crop(2, 0, 2, 2) }
+        assertThrows(IllegalArgumentException::class.java) { e.crop(-1, 0, 2, 2) }
+        assertThrows(IllegalArgumentException::class.java) { e.crop(0, 0, 0, 2) }
+    }
+
+    // ---- 画像素式变换 ----
+
+    @Test
+    fun `水平翻转镜像所有页并可撤销`() {
+        val page0 = intArrayOf(1, 2, 3, 4, 5, 6)
+        val page1 = intArrayOf(7, 8, 9, 10, 11, 12)
+        val e = EditorEngine(3, 2, listOf(page0, page1))
+        assertTrue(e.flipHorizontal())
+        assertArrayEquals(intArrayOf(3, 2, 1, 6, 5, 4), e.pages[0])
+        assertArrayEquals(intArrayOf(9, 8, 7, 12, 11, 10), e.pages[1])
+        assertTrue(e.undo())
+        assertArrayEquals(page0, e.pages[0])
+        assertArrayEquals(page1, e.pages[1])
+    }
+
+    @Test
+    fun `垂直翻转镜像并保留锁定`() {
+        val e = EditorEngine(2, 3, intArrayOf(1, 2, 3, 4, 5, 6))
+        e.setLocked(0, true)
+        assertTrue(e.flipVertical())
+        assertArrayEquals(intArrayOf(5, 6, 3, 4, 1, 2), e.cells)
+        assertTrue(e.locked[4])
+    }
+
+    @Test
+    fun `顺时针旋转宽高互换且可撤销`() {
+        val e = EditorEngine(2, 3, intArrayOf(1, 2, 3, 4, 5, 6))
+        assertTrue(e.rotate90(clockwise = true))
+        assertEquals(3, e.width)
+        assertEquals(2, e.height)
+        assertArrayEquals(intArrayOf(5, 3, 1, 6, 4, 2), e.cells)
+        assertTrue(e.undo())
+        assertEquals(2, e.width)
+        assertEquals(3, e.height)
+        assertArrayEquals(intArrayOf(1, 2, 3, 4, 5, 6), e.cells)
+    }
+
+    @Test
+    fun `逆时针旋转与顺时针互为逆操作`() {
+        val e = EditorEngine(2, 3, intArrayOf(1, 2, 3, 4, 5, 6))
+        e.rotate90(clockwise = true)
+        e.rotate90(clockwise = false)
+        assertEquals(2, e.width)
+        assertEquals(3, e.height)
+        assertArrayEquals(intArrayOf(1, 2, 3, 4, 5, 6), e.cells)
+    }
+
+    @Test
+    fun `编辑器支持 500 尺寸改画布`() {
+        val e = EditorEngine(250, 250, IntArray(250 * 250) { -1 })
+        e.resize(500, 500)
+        assertEquals(500, e.width)
+        assertEquals(500, e.height)
+        assertEquals(250_000, e.cells.size)
+        assertTrue(e.crop(0, 0, 500, 500) == false)
     }
 }
 

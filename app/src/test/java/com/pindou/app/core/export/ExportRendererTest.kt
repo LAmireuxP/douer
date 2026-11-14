@@ -71,6 +71,19 @@ class ExportRendererTest {
     }
 
     @Test
+    fun `符号分配按用量降序且唯一`() {
+        val result = makeResult()
+        val used = result.usage().map { it.first }
+        val assignments = ExportRenderer.symbolAssignments(result)
+
+        assertEquals(used.size, assignments.size)
+        used.forEachIndexed { i, colorIdx ->
+            assertEquals(ExportRenderer.SYMBOLS[i % ExportRenderer.SYMBOLS.size], assignments[colorIdx])
+        }
+        assertEquals(used.size, assignments.values.toSet().size)
+    }
+
+    @Test
     fun `空格不绘制`() {
         val result = PatternResult(2, 1, intArrayOf(-1, palette.indexOfCode("R")), palette, 0)
         val bmp = ExportRenderer.renderPattern(
@@ -80,6 +93,64 @@ class ExportRendererTest {
         // 空格保持背景色
         assertEquals(0xFFFAFAFA.toInt(), bmp.pixels[0])
         assertEquals(0xFFFF0000.toInt(), bmp.pixels[16])
+    }
+
+    @Test
+    fun `坐标带只占四周且格子从坐标带后开始`() {
+        val cell = 32
+        val ruler = ExportRenderer.rulerSizePx(cell)
+        val bmp = ExportRenderer.renderPattern(
+            makeResult(),
+            ExportRenderer.RenderOptions(
+                cellPx = cell,
+                showCodes = false,
+                showGrid = false,
+                showRuler = true,
+            ),
+        )
+        assertEquals(ruler * 2 + 3 * cell + 1, bmp.width)
+        assertEquals(ruler * 2 + 2 * cell + 1, bmp.height)
+        // 左上格仍是白色，没有被坐标带盖住
+        assertEquals(
+            0xFFFFFFFF.toInt(),
+            bmp.pixels[(ruler + 2) * bmp.width + ruler + 2],
+        )
+        // 第三格红色，位置整体右移一个坐标带
+        assertEquals(
+            0xFFFF0000.toInt(),
+            bmp.pixels[(ruler + 2) * bmp.width + ruler + 2 * cell + 2],
+        )
+        // 坐标带里应有黑色刻度/数字
+        val band = (0 until ruler * bmp.width).map { bmp.pixels[it] }
+        assertTrue(band.any { it == 0xFF2A2A2A.toInt() })
+    }
+
+    @Test
+    fun `坐标带四条边都留白且都有刻度`() {
+        val cell = 32
+        val ruler = ExportRenderer.rulerSizePx(cell)
+        val bmp = ExportRenderer.renderPattern(
+            makeResult(),
+            ExportRenderer.RenderOptions(
+                cellPx = cell,
+                showCodes = false,
+                showGrid = false,
+                showRuler = true,
+            ),
+        )
+        val rightBand = (0 until bmp.height).map {
+            bmp.pixels[it * bmp.width + bmp.width - 2]
+        }
+        val bottomBand = (0 until bmp.width).map {
+            bmp.pixels[(bmp.height - 2) * bmp.width + it]
+        }
+        assertTrue(rightBand.any { it == 0xFFF1F1EB.toInt() })
+        assertTrue(bottomBand.any { it == 0xFFF1F1EB.toInt() })
+        assertTrue(rightBand.any { it == 0xFF2A2A2A.toInt() })
+        assertTrue(bottomBand.any { it == 0xFF2A2A2A.toInt() })
+        // 图案区右边界之外仍有一整条坐标带。
+        assertTrue(bmp.width > ruler * 2 + 3 * cell)
+        assertTrue(bmp.height > ruler * 2 + 2 * cell)
     }
 
     @Test

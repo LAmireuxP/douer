@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalLayoutApi::class)
+
 package com.pindou.app.ui.editor
 
 import com.pindou.app.ui.icon.MorphIcons
@@ -8,12 +10,16 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -66,6 +72,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -79,14 +87,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.content.res.Configuration
 import com.pindou.app.core.editor.BrushStamp
 import com.pindou.app.core.editor.ColorReplaceOps
 import com.pindou.app.core.editor.EditorEngine
 import com.pindou.app.core.editor.RunRects
+import com.pindou.app.core.editor.SymmetryMode
 import com.pindou.app.ui.AppViewModel
 import com.pindou.app.ui.CellCodeDrawer
 import com.pindou.app.ui.CellCodeDrawer.drawCellCode
 import com.pindou.app.ui.EditorTool
+import com.pindou.app.ui.GridRuler
 import com.pindou.app.ui.shadcn.ShSearchField
 import com.pindou.app.ui.theme.ClayColors
 import com.pindou.app.ui.theme.Spacing
@@ -114,24 +125,47 @@ private class CanvasTransform {
  */
 private val EmptyCellColor = Color(0xFFEDEDE7)
 
-private fun baseOrigin(canvas: Offset, engine: EditorEngine): Offset {
-    val cellBase = min(canvas.x / engine.width, canvas.y / engine.height)
+private fun availSize(canvas: Offset, gutter: Float): Offset = Offset(
+    (canvas.x - gutter * 2f).coerceAtLeast(1f),
+    (canvas.y - gutter * 2f).coerceAtLeast(1f),
+)
+
+private fun baseOrigin(canvas: Offset, engine: EditorEngine, gutter: Float): Offset {
+    val avail = availSize(canvas, gutter)
+    val cellBase = min(avail.x / engine.width, avail.y / engine.height)
     return Offset(
-        (canvas.x - cellBase * engine.width) / 2f,
-        (canvas.y - cellBase * engine.height) / 2f,
+        gutter + (avail.x - cellBase * engine.width) / 2f,
+        gutter + (avail.y - cellBase * engine.height) / 2f,
     )
 }
 
-private fun drawOrigin(canvas: Offset, tf: CanvasTransform, engine: EditorEngine): Offset =
-    baseOrigin(canvas, engine) + tf.offset
+private fun drawOrigin(
+    canvas: Offset,
+    tf: CanvasTransform,
+    engine: EditorEngine,
+    gutter: Float,
+): Offset = baseOrigin(canvas, engine, gutter) + tf.offset
 
-private fun cellPx(canvas: Offset, tf: CanvasTransform, engine: EditorEngine): Float =
-    min(canvas.x / engine.width, canvas.y / engine.height) * tf.scale
+private fun cellPx(
+    canvas: Offset,
+    tf: CanvasTransform,
+    engine: EditorEngine,
+    gutter: Float,
+): Float {
+    val avail = availSize(canvas, gutter)
+    return min(avail.x / engine.width, avail.y / engine.height) * tf.scale
+}
 
-private fun cellAt(view: Offset, canvas: Offset, tf: CanvasTransform, engine: EditorEngine): Int {
-    val cell = cellPx(canvas, tf, engine)
+private fun cellAt(
+    view: Offset,
+    canvas: Offset,
+    tf: CanvasTransform,
+    engine: EditorEngine,
+    gutter: Float,
+): Int {
+    val cell = cellPx(canvas, tf, engine, gutter)
     if (cell <= 0f) return -1
-    val origin = drawOrigin(canvas, tf, engine)
+    val origin = drawOrigin(canvas, tf, engine, gutter)
     val x = ((view.x - origin.x) / cell).toInt()
     val y = ((view.y - origin.y) / cell).toInt()
     if (x < 0 || y < 0 || x >= engine.width || y >= engine.height) return -1
@@ -139,23 +173,29 @@ private fun cellAt(view: Offset, canvas: Offset, tf: CanvasTransform, engine: Ed
 }
 
 /** 把画布拉回可视区：缩放到 1 倍时强制居中；放大后允许在四边内平移。 */
-private fun clampTransform(canvas: Offset, engine: EditorEngine, tf: CanvasTransform) {
+private fun clampTransform(
+    canvas: Offset,
+    engine: EditorEngine,
+    tf: CanvasTransform,
+    gutter: Float,
+) {
     if (canvas.x <= 0f || canvas.y <= 0f) return
-    val cell = cellPx(canvas, tf, engine)
+    val cell = cellPx(canvas, tf, engine, gutter)
     if (cell <= 0f) return
-    val base = baseOrigin(canvas, engine)
-    val origin = drawOrigin(canvas, tf, engine)
+    val avail = availSize(canvas, gutter)
+    val base = baseOrigin(canvas, engine, gutter)
+    val origin = drawOrigin(canvas, tf, engine, gutter)
     val contentW = cell * engine.width
     val contentH = cell * engine.height
-    val x = if (contentW <= canvas.x) {
-        (canvas.x - contentW) / 2f
+    val x = if (contentW <= avail.x) {
+        gutter + (avail.x - contentW) / 2f
     } else {
-        origin.x.coerceIn(canvas.x - contentW, 0f)
+        origin.x.coerceIn(canvas.x - gutter - contentW, gutter)
     }
-    val y = if (contentH <= canvas.y) {
-        (canvas.y - contentH) / 2f
+    val y = if (contentH <= avail.y) {
+        gutter + (avail.y - contentH) / 2f
     } else {
-        origin.y.coerceIn(canvas.y - contentH, 0f)
+        origin.y.coerceIn(canvas.y - gutter - contentH, gutter)
     }
     tf.offset = Offset(x - base.x, y - base.y)
 }
@@ -166,19 +206,20 @@ private fun zoomAt(
     tf: CanvasTransform,
     focus: Offset,
     targetScale: Float,
+    gutter: Float,
 ) {
     val oldScale = tf.scale
     val newScale = targetScale.coerceIn(1f, 20f)
     if (abs(newScale - oldScale) < 0.001f) return
-    val origin = drawOrigin(canvas, tf, engine)
+    val origin = drawOrigin(canvas, tf, engine, gutter)
     val k = newScale / oldScale
     val newOrigin = Offset(
         focus.x - (focus.x - origin.x) * k,
         focus.y - (focus.y - origin.y) * k,
     )
     tf.scale = newScale
-    tf.offset = newOrigin - baseOrigin(canvas, engine)
-    clampTransform(canvas, engine, tf)
+    tf.offset = newOrigin - baseOrigin(canvas, engine, gutter)
+    clampTransform(canvas, engine, tf, gutter)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -207,6 +248,7 @@ fun EditorScreen(vm: AppViewModel) {
     var showManageSheet by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showResizeDialog by remember { mutableStateOf(false) }
+    var showCropDialog by remember { mutableStateOf(false) }
     var showReplaceSheet by remember { mutableStateOf(false) }
     var replaceSource by remember { mutableIntStateOf(0) }
     var colorOpReport by remember { mutableStateOf<List<ColorReplaceOps.Move>>(emptyList()) }
@@ -218,56 +260,99 @@ fun EditorScreen(vm: AppViewModel) {
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     val transform = remember { CanvasTransform() }
     val haptic = LocalHapticFeedback.current
+    // 坐标带宽度：画布几何、点击命中、缩放都以它为左上边界
+    val gutter = with(LocalDensity.current) { GridRuler.GUTTER_DP.dp.toPx() }
+
+    LaunchedEffect(vm.editorTool) {
+        if (vm.editorTool != EditorTool.SHAPE) vm.editorShapeStart = null
+    }
 
     LaunchedEffect(engine.pageIndex, engine.width, engine.height) {
         transform.reset()
     }
 
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(Spacing.xxs),
-    ) {
-        // 顶栏：图纸信息在左，历史/更多/完成在右
+    val landscape = LocalConfiguration.current.orientation ==
+        Configuration.ORIENTATION_LANDSCAPE
+
+    // 顶栏：竖屏常规密度，横屏压到 40dp 左右，把高度留给画布。
+    val headerContent: @Composable (Boolean) -> Unit = { compact ->
+        // 撤销裁剪会同时改 engine.width/height，但它们不是 Compose 状态；
+        // 这里订阅 revision，尺寸文字才能和画布在同一帧刷新。
+        val gridLabel = remember(vm.editorRevision) {
+            "${engine.width}×${engine.height}"
+        }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = Spacing.xs, vertical = Spacing.xxs),
+                .padding(
+                    horizontal = Spacing.xs,
+                    vertical = if (compact) 1.dp else Spacing.xxs,
+                ),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(modifier = Modifier.padding(start = Spacing.sm)) {
+            IconButton(
+                onClick = { vm.exitEditor() },
+                modifier = if (compact) Modifier.size(36.dp) else Modifier,
+            ) {
+                Icon(
+                    MorphIcons.ArrowLeft,
+                    contentDescription = "返回",
+                    modifier = if (compact) Modifier.size(20.dp) else Modifier,
+                )
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 2.dp),
+            ) {
                 Text(
-                    "${engine.width}×${engine.height}",
-                    style = MaterialTheme.typography.titleMedium,
+                    if (vm.pixelModuleActive) "画像素 · $gridLabel" else gridLabel,
+                    style = if (compact) MaterialTheme.typography.titleSmall
+                    else MaterialTheme.typography.titleMedium,
                 )
                 Text(
-                    "${palette.brandLabel} · 第 ${engine.pageIndex + 1}/${engine.pageCount} 页",
+                    if (vm.pixelModuleActive) {
+                        "像素画布 · ${palette.brandLabel} · 第 ${engine.pageIndex + 1}/${engine.pageCount} 页"
+                    } else {
+                        "${palette.brandLabel} · 第 ${engine.pageIndex + 1}/${engine.pageCount} 页"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 UndoRedoButtons(vm, engine)
-                IconButton(onClick = { showMenu = true }) {
-                    Icon(MorphIcons.MoreVertical, contentDescription = "更多")
+                IconButton(
+                    onClick = { showMenu = true },
+                    modifier = if (compact) Modifier.size(36.dp) else Modifier,
+                ) {
+                    Icon(
+                        MorphIcons.MoreVertical,
+                        contentDescription = "更多",
+                        modifier = if (compact) Modifier.size(20.dp) else Modifier,
+                    )
                 }
                 Button(
                     onClick = { vm.finishEditor() },
                     shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
-                    modifier = Modifier.height(36.dp),
+                    contentPadding = PaddingValues(
+                        horizontal = if (compact) 12.dp else 16.dp,
+                        vertical = 0.dp,
+                    ),
+                    modifier = Modifier.height(if (compact) 30.dp else 36.dp),
                 ) {
                     Text("完成", style = MaterialTheme.typography.labelLarge)
                 }
             }
         }
+    }
 
-        // 画布 + 悬浮工具（原图对比 / 缩放）
+    // 画布本体竖屏、横屏共用，只由调用方决定尺寸和位置。
+    val canvasContent: @Composable (Modifier) -> Unit = { modifier ->
         Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .padding(horizontal = Spacing.xs)
+            modifier = modifier
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surface)
                 .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
@@ -278,6 +363,7 @@ fun EditorScreen(vm: AppViewModel) {
                 paletteCodes = paletteCodes,
                 paletteArgb = paletteArgb,
                 transform = transform,
+                gutter = gutter,
                 showCodes = vm.editorShowCodes,
                 showGrid = vm.editorShowGrid,
                 // 传 lambda 而不是 Int：Int 参数会让整个编辑页在每条笔画结束时
@@ -288,7 +374,7 @@ fun EditorScreen(vm: AppViewModel) {
                 brushSize = vm.editorBrushSize,
                 refImage = vm.refBitmap?.takeIf { vm.showRefOverlay }?.asImageBitmap(),
                 refAlpha = vm.refOpacity,
-                highlightCell = longPressCell,
+                highlightCell = vm.editorShapeStart ?: longPressCell,
                 onTap = { cell -> handleTap(vm, engine, cell, vm.editorBrushSize) },
                 onStrokeCell = { cell, session ->
                     handleStrokeCell(vm, engine, cell, session, vm.editorBrushSize)
@@ -328,6 +414,7 @@ fun EditorScreen(vm: AppViewModel) {
                 canvasSize = canvasSize,
                 engine = engine,
                 transform = transform,
+                gutter = gutter,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(8.dp),
@@ -349,7 +436,14 @@ fun EditorScreen(vm: AppViewModel) {
                 )
             }
         }
+    }
 
+    // 右侧控制栏和底部控制区共用一份，横屏只把外边距收紧。
+    val controlsContent: @Composable (Boolean) -> Unit = { compact ->
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 0.dp),
+        ) {
         // 页码行
         Row(
             modifier = Modifier
@@ -438,60 +532,254 @@ fun EditorScreen(vm: AppViewModel) {
                 vm.editorTool == EditorTool.PAN,
                 modifier = Modifier.weight(1f),
             ) { vm.editorTool = EditorTool.PAN }
+            EditorToolButton(
+                MorphIcons.Grid,
+                "形状",
+                vm.editorTool == EditorTool.SHAPE,
+                modifier = Modifier.weight(1f),
+            ) {
+                vm.editorTool = EditorTool.SHAPE
+                vm.editorShapeStart = null
+            }
         }
 
-        // 笔刷尺寸 + 显示开关
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Spacing.md, vertical = 2.dp),
-            horizontalArrangement = Arrangement.spacedBy(5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "笔刷",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            BrushStamp.sizes.forEach { size ->
+        // 笔刷尺寸 + 显示开关。横屏控制栏只有 248dp，拆两行避免挤出屏幕。
+        if (compact) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.md, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "笔刷",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                BrushStamp.sizes.forEach { size ->
+                    CompactChip(
+                        text = "${size}×${size}",
+                        selected = vm.editorBrushSize == size,
+                        onClick = { vm.editorBrushSize = size },
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.md, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "显示",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 CompactChip(
-                    text = "${size}×${size}",
-                    selected = vm.editorBrushSize == size,
-                    onClick = { vm.editorBrushSize = size },
+                    text = "色号",
+                    selected = vm.editorShowCodes,
+                    onClick = { vm.editorShowCodes = !vm.editorShowCodes },
+                )
+                CompactChip(
+                    text = "网格",
+                    selected = vm.editorShowGrid,
+                    onClick = { vm.editorShowGrid = !vm.editorShowGrid },
                 )
             }
-            Spacer(Modifier.weight(1f))
-            CompactChip(
-                text = "色号",
-                selected = vm.editorShowCodes,
-                onClick = { vm.editorShowCodes = !vm.editorShowCodes },
-            )
-            CompactChip(
-                text = "网格",
-                selected = vm.editorShowGrid,
-                onClick = { vm.editorShowGrid = !vm.editorShowGrid },
-            )
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.md, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "笔刷",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                BrushStamp.sizes.forEach { size ->
+                    CompactChip(
+                        text = "${size}×${size}",
+                        selected = vm.editorBrushSize == size,
+                        onClick = { vm.editorBrushSize = size },
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                CompactChip(
+                    text = "色号",
+                    selected = vm.editorShowCodes,
+                    onClick = { vm.editorShowCodes = !vm.editorShowCodes },
+                )
+                CompactChip(
+                    text = "网格",
+                    selected = vm.editorShowGrid,
+                    onClick = { vm.editorShowGrid = !vm.editorShowGrid },
+                )
+            }
+        }
+
+        // 对称绘制：画像素里的镜像轴，画笔/橡皮落笔时同步补镜像格
+        if (vm.editorTool == EditorTool.PAINT || vm.editorTool == EditorTool.ERASE) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.md, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "对称",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                SymmetryMode.entries.forEach { mode ->
+                    CompactChip(
+                        text = mode.label,
+                        selected = vm.editorSymmetry == mode,
+                        onClick = { vm.editorSymmetry = mode },
+                    )
+                }
+            }
+        }
+
+        if (vm.editorTool == EditorTool.SHAPE) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.md, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "形状",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                com.pindou.app.core.editor.ShapeTool.entries.forEach { shape ->
+                    CompactChip(
+                        text = shape.label,
+                        selected = vm.editorShape == shape,
+                        onClick = {
+                            vm.editorShape = shape
+                            vm.editorShapeStart = null
+                        },
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                CompactChip(
+                    text = "填充",
+                    selected = vm.editorShapeFilled,
+                    onClick = { vm.editorShapeFilled = !vm.editorShapeFilled },
+                )
+            }
+        }
+
+        // 区域擦除是橡皮的子模式，选别的工具时不占版面
+        if (vm.editorTool == EditorTool.ERASE) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.md),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CompactChip(
+                    text = "区域擦除",
+                    selected = vm.editorEraseRegion,
+                    onClick = { vm.editorEraseRegion = !vm.editorEraseRegion },
+                )
+                Text(
+                    if (vm.editorEraseRegion) {
+                        "点按擦掉整块同色区域 · 划动仍是方形橡皮"
+                    } else {
+                        "开启后点按整块同色区域一起擦除"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = if (compact) 2 else 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
 
         Text(
             when (vm.editorTool) {
                 EditorTool.NONE -> "先选一个工具再编辑 · 单指拖动画布 · 双指缩放"
                 EditorTool.PAINT -> "点按/划动上色 · 双指缩放 · 长按单格菜单"
-                EditorTool.ERASE ->
+                EditorTool.ERASE -> if (vm.editorEraseRegion) {
+                    "区域擦除：点按整块同色区域 · 双指缩放"
+                } else {
                     "擦除 ${vm.editorBrushSize}×${vm.editorBrushSize} · 双指缩放 · 长按单格菜单"
+                }
                 EditorTool.FILL -> "点按填充同色连通区域 · 双指缩放"
                 EditorTool.PICKER -> "点按格子取色，取完自动切回画笔"
                 EditorTool.PAN -> "单指拖动画布 · 双指缩放 · 点「适应」回到全图"
+                EditorTool.SHAPE -> if (vm.editorShapeStart == null) {
+                    "点第一格定起点 · 再点第二格画${vm.editorShape.label}"
+                } else {
+                    "已定起点 · 点第二格画${vm.editorShape.label} · 换工具取消"
+                }
             },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
+            maxLines = if (compact) 3 else 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = Spacing.md)
                 .padding(bottom = 2.dp),
         )
+        }
+    }
+
+    if (landscape) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            headerContent(true)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+            ) {
+                canvasContent(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .padding(start = Spacing.xs, bottom = Spacing.xs),
+                )
+                Column(
+                    modifier = Modifier
+                        .width(248.dp)
+                        .fillMaxHeight()
+                        .verticalScroll(rememberScrollState())
+                        .padding(end = Spacing.xs)
+                        .padding(bottom = Spacing.sm),
+                ) {
+                    controlsContent(true)
+                }
+            }
+        }
+    } else {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(Spacing.xxs),
+        ) {
+            headerContent(false)
+            canvasContent(
+                Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(horizontal = Spacing.xs),
+            )
+            controlsContent(false)
+        }
     }
 
     // 色卡选择
@@ -708,6 +996,14 @@ fun EditorScreen(vm: AppViewModel) {
                     )
                 }
                 MenuItemRow(
+                    icon = MorphIcons.Brush,
+                    title = "在画像素中编辑",
+                    subtitle = "保留当前所有页，转成帧/图层工作区",
+                ) {
+                    showMenu = false
+                    vm.editInStudio()
+                }
+                MenuItemRow(
                     icon = MorphIcons.PaintBucket,
                     title = "色板管理",
                     subtitle = "换品牌 / 合并相近色",
@@ -757,6 +1053,46 @@ fun EditorScreen(vm: AppViewModel) {
                 ) {
                     showMenu = false
                     showResizeDialog = true
+                }
+                MenuItemRow(
+                    icon = MorphIcons.Grid,
+                    title = "裁剪图纸",
+                    subtitle = "按坐标裁掉四周多余的格子",
+                ) {
+                    showMenu = false
+                    showCropDialog = true
+                }
+                MenuItemRow(
+                    icon = MorphIcons.FlipHorizontal,
+                    title = "水平翻转",
+                    subtitle = "左右镜像当前所有页，可撤销",
+                ) {
+                    vm.flipEditorHorizontal()
+                    showMenu = false
+                }
+                MenuItemRow(
+                    icon = MorphIcons.SwapHorizontal,
+                    title = "垂直翻转",
+                    subtitle = "上下镜像当前所有页，可撤销",
+                ) {
+                    vm.flipEditorVertical()
+                    showMenu = false
+                }
+                MenuItemRow(
+                    icon = MorphIcons.RotateCcw,
+                    title = "左转 90°",
+                    subtitle = "宽高互换，所有页一起旋转",
+                ) {
+                    vm.rotateEditor(clockwise = false)
+                    showMenu = false
+                }
+                MenuItemRow(
+                    icon = MorphIcons.RotateCw,
+                    title = "右转 90°",
+                    subtitle = "宽高互换，所有页一起旋转",
+                ) {
+                    vm.rotateEditor(clockwise = true)
+                    showMenu = false
                 }
                 MenuItemRow(
                     icon = MorphIcons.Download,
@@ -809,7 +1145,7 @@ fun EditorScreen(vm: AppViewModel) {
                 Button(onClick = {
                     val nw = w.toIntOrNull() ?: 0
                     val nh = h.toIntOrNull() ?: 0
-                    if (nw in 5..200 && nh in 5..200) {
+                    if (nw in 5..500 && nh in 5..500) {
                         vm.resizeEditor(nw, nh)
                         showResizeDialog = false
                     }
@@ -817,6 +1153,94 @@ fun EditorScreen(vm: AppViewModel) {
             },
             dismissButton = {
                 TextButton(onClick = { showResizeDialog = false }) { Text("取消") }
+            },
+        )
+    }
+
+    // 编辑时裁剪：输入左上角与目标尺寸，范围必须落在当前图纸内
+    if (showCropDialog) {
+        var leftText by remember { mutableStateOf("1") }
+        var topText by remember { mutableStateOf("1") }
+        var w by remember { mutableStateOf(engine.width.toString()) }
+        var h by remember { mutableStateOf(engine.height.toString()) }
+        val l = leftText.toIntOrNull()
+        val t = topText.toIntOrNull()
+        val nw = w.toIntOrNull()
+        val nh = h.toIntOrNull()
+        val valid = l != null && t != null && nw != null && nh != null &&
+            l >= 1 && t >= 1 && nw in 5..500 && nh in 5..500 &&
+            l - 1 + nw <= engine.width && t - 1 + nh <= engine.height
+        AlertDialog(
+            onDismissRequest = { showCropDialog = false },
+            title = { Text("裁剪图纸") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                    Text(
+                        "当前 ${engine.width}×${engine.height}；左上角从 1 开始数，保留 " +
+                            "(${l ?: "?"}, ${t ?: "?"}) 起的区域",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                        OutlinedTextField(
+                            value = leftText,
+                            onValueChange = { leftText = it.filter { c -> c.isDigit() }.take(3) },
+                            label = { Text("左") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedTextField(
+                            value = topText,
+                            onValueChange = { topText = it.filter { c -> c.isDigit() }.take(3) },
+                            label = { Text("上") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                        OutlinedTextField(
+                            value = w,
+                            onValueChange = { w = it.filter { c -> c.isDigit() }.take(3) },
+                            label = { Text("宽") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedTextField(
+                            value = h,
+                            onValueChange = { h = it.filter { c -> c.isDigit() }.take(3) },
+                            label = { Text("高") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    Text(
+                        if (valid) {
+                            "结果 ${nw}×${nh}，所有页同步裁剪，可撤销"
+                        } else {
+                            "范围无效：宽高 5..500，且不能超出当前图纸"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (valid) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        },
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (l != null && t != null && nw != null && nh != null && valid) {
+                            vm.cropEditor(l - 1, t - 1, nw, nh)
+                            showCropDialog = false
+                        }
+                    },
+                    enabled = valid,
+                ) { Text("裁剪") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCropDialog = false }) { Text("取消") }
             },
         )
     }
@@ -837,9 +1261,10 @@ fun EditorScreen(vm: AppViewModel) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                    verticalArrangement = Arrangement.spacedBy(Spacing.xs),
                 ) {
                     vm.palettes
                         .filter { it.beadSize == palette.beadSize }
@@ -874,7 +1299,7 @@ fun EditorScreen(vm: AppViewModel) {
                 )
                 Button(
                     onClick = {
-                        vm.mergeSimilarEditorColors(mergeThreshold.toDouble())
+                        vm.mergeSimilarEditorColorsWithReport(mergeThreshold.toDouble())
                         showManageSheet = false
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -1136,17 +1561,40 @@ private fun handleTap(vm: AppViewModel, engine: EditorEngine, cell: Int, brushSi
         }
         EditorTool.PAINT -> {
             val session = engine.startStroke()
-            stampBrush(engine, cell, brushSize, session, vm.editorColor)
+            stampBrush(engine, cell, brushSize, session, vm.editorColor, vm.editorSymmetry)
             engine.endStroke(session)
             vm.notifyEditorChanged()
         }
         EditorTool.ERASE -> {
-            val session = engine.startStroke()
-            stampBrush(engine, cell, brushSize, session, -1)
-            engine.endStroke(session)
-            vm.notifyEditorChanged()
+            if (vm.editorEraseRegion) {
+                if (engine.eraseRegion(cell)) vm.notifyEditorChanged()
+            } else {
+                val session = engine.startStroke()
+                stampBrush(engine, cell, brushSize, session, -1, vm.editorSymmetry)
+                engine.endStroke(session)
+                vm.notifyEditorChanged()
+            }
         }
         EditorTool.PAN -> Unit
+        EditorTool.SHAPE -> {
+            val start = vm.editorShapeStart
+            if (start == null) {
+                vm.editorShapeStart = cell
+            } else {
+                if (engine.drawShape(
+                        kind = vm.editorShape,
+                        start = start,
+                        end = cell,
+                        color = vm.editorColor,
+                        filled = vm.editorShapeFilled,
+                        symmetry = vm.editorSymmetry,
+                    )
+                ) {
+                    vm.notifyEditorChanged()
+                }
+                vm.editorShapeStart = null
+            }
+        }
     }
 }
 
@@ -1156,9 +1604,12 @@ private fun stampBrush(
     brushSize: Int,
     session: EditorEngine.StrokeSession,
     color: Int,
+    symmetry: SymmetryMode,
 ) {
-    BrushStamp.forEachCell(engine.width, engine.height, center, brushSize) { index ->
-        session.setCell(index, color)
+    for (mirroredCenter in symmetry.centers(center, engine.width, engine.height)) {
+        BrushStamp.forEachCell(engine.width, engine.height, mirroredCenter, brushSize) { index ->
+            session.setCell(index, color)
+        }
     }
 }
 
@@ -1172,9 +1623,11 @@ private fun handleStrokeCell(
     if (cell < 0) return
     when (vm.editorTool) {
         EditorTool.NONE -> Unit
-        EditorTool.PAINT -> stampBrush(engine, cell, brushSize, session, vm.editorColor)
-        EditorTool.ERASE -> stampBrush(engine, cell, brushSize, session, -1)
-        EditorTool.FILL, EditorTool.PICKER, EditorTool.PAN -> Unit
+        EditorTool.PAINT ->
+            stampBrush(engine, cell, brushSize, session, vm.editorColor, vm.editorSymmetry)
+        EditorTool.ERASE ->
+            stampBrush(engine, cell, brushSize, session, -1, vm.editorSymmetry)
+        EditorTool.FILL, EditorTool.PICKER, EditorTool.PAN, EditorTool.SHAPE -> Unit
     }
 }
 
@@ -1336,6 +1789,7 @@ private fun ZoomControls(
     canvasSize: IntSize,
     engine: EditorEngine,
     transform: CanvasTransform,
+    gutter: Float,
     modifier: Modifier = Modifier,
 ) {
     // derivedStateOf 只在跨过阈值时通知：拖动平移只改 offset，
@@ -1360,11 +1814,11 @@ private fun ZoomControls(
         val canvas = Offset(canvasSize.width.toFloat(), canvasSize.height.toFloat())
         val focus = Offset(canvas.x / 2f, canvas.y / 2f)
         ZoomButton("−", enabled = canZoomOut) {
-            zoomAt(canvas, engine, transform, focus, transform.scale / 1.5f)
+            zoomAt(canvas, engine, transform, focus, transform.scale / 1.5f, gutter)
         }
         ZoomPercent(transform)
         ZoomButton("+", enabled = canZoomIn) {
-            zoomAt(canvas, engine, transform, focus, transform.scale * 1.5f)
+            zoomAt(canvas, engine, transform, focus, transform.scale * 1.5f, gutter)
         }
         ZoomButton("适应", enabled = canFit) {
             transform.reset()
@@ -1506,6 +1960,7 @@ private fun EditorCanvas(
     paletteCodes: List<String>,
     paletteArgb: List<Int>,
     transform: CanvasTransform,
+    gutter: Float,
     showCodes: Boolean,
     showGrid: Boolean,
     revisionProvider: () -> Int,
@@ -1529,6 +1984,11 @@ private fun EditorCanvas(
     val strokeEndState by rememberUpdatedState(onStrokeEnd)
 
     val measurer = rememberTextMeasurer()
+    val rulerTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val rulerBandColor = MaterialTheme.colorScheme.surface
+    val rulerCache = remember {
+        mutableMapOf<Pair<String, Int>, androidx.compose.ui.text.TextLayoutResult>()
+    }
     // 换色卡后同色号可能对应不同明暗，旧布局的文字黑白会错；按色卡重建
     val layoutCache = remember(paletteArgb) {
         mutableMapOf<Pair<String, Int>, androidx.compose.ui.text.TextLayoutResult>()
@@ -1560,7 +2020,7 @@ private fun EditorCanvas(
                     val canvas = Offset(size.width.toFloat(), size.height.toFloat())
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val start = down.position
-                    val startCell = cellAt(start, canvas, transform, engine)
+                    val startCell = cellAt(start, canvas, transform, engine, gutter)
                     var last = start
                     var lastCell = startCell
                     var moved = false
@@ -1612,11 +2072,12 @@ private fun EditorCanvas(
                                         transform,
                                         centroid,
                                         transform.scale * (dist / prevDist),
+                                        gutter,
                                     )
                                 }
                                 if (prevCentroid != Offset.Zero) {
                                     transform.offset += centroid - prevCentroid
-                                    clampTransform(canvas, engine, transform)
+                                    clampTransform(canvas, engine, transform, gutter)
                                 }
                                 prevDist = dist
                                 prevCentroid = centroid
@@ -1645,12 +2106,12 @@ private fun EditorCanvas(
                                     moved
                                 ) {
                                     transform.offset += pos - last
-                                    clampTransform(canvas, engine, transform)
+                                    clampTransform(canvas, engine, transform, gutter)
                                 } else if (!isTransform && moved && !longPressed &&
                                     (tool == EditorTool.PAINT || tool == EditorTool.ERASE)
                                 ) {
                                     val session = stroke ?: engine.startStroke().also { stroke = it }
-                                    val cellNow = cellPx(canvas, transform, engine)
+                                    val cellNow = cellPx(canvas, transform, engine, gutter)
                                     val stepPx = max(2f, cellNow / 2f)
                                     val distance = hypot(
                                         (pos.x - last.x).toDouble(),
@@ -1663,7 +2124,10 @@ private fun EditorCanvas(
                                             last.x + (pos.x - last.x) * t,
                                             last.y + (pos.y - last.y) * t,
                                         )
-                                        strokeCellState(cellAt(p, canvas, transform, engine), session)
+                                        strokeCellState(
+                                            cellAt(p, canvas, transform, engine, gutter),
+                                            session,
+                                        )
                                     }
                                     // 8ms ≈ 120Hz 上限：画到哪儿立刻能看到，又不会每个
                                     // 指针事件都重录一遍整块画布
@@ -1674,7 +2138,7 @@ private fun EditorCanvas(
                                     }
                                 }
 
-                                lastCell = cellAt(pos, canvas, transform, engine)
+                                lastCell = cellAt(pos, canvas, transform, engine, gutter)
                                 last = pos
                             }
 
@@ -1722,9 +2186,9 @@ private fun EditorCanvas(
         liveTick.intValue
         val interacting = gestureActive.value
         val canvas = Offset(size.width, size.height)
-        val cell = cellPx(canvas, transform, engine)
+        val cell = cellPx(canvas, transform, engine, gutter)
         if (cell <= 0f) return@Canvas
-        val origin = drawOrigin(canvas, transform, engine)
+        val origin = drawOrigin(canvas, transform, engine, gutter)
 
         val firstX = max(0, (-origin.x / cell).toInt())
         val firstY = max(0, (-origin.y / cell).toInt())
@@ -1856,6 +2320,21 @@ private fun EditorCanvas(
                 topLeft = Offset(left - stroke / 2f, top - stroke / 2f),
                 size = Size(cell + stroke, cell + stroke),
                 style = Stroke(width = stroke),
+            )
+        }
+
+        // 坐标尺最后画，盖住平移时贴到边缘的网格；刻度与点击共用同一 origin/cell
+        with(GridRuler) {
+            drawGridRuler(
+                origin = origin,
+                cell = cell,
+                cols = engine.width,
+                rows = engine.height,
+                gutter = gutter,
+                measurer = measurer,
+                cache = rulerCache,
+                textColor = rulerTextColor,
+                bandColor = rulerBandColor,
             )
         }
     }

@@ -30,9 +30,9 @@ keystore/
 
 # Local analysis artifacts
 .codex-artifacts/
+代码审查报告.md
 dbcheck/
 tools/
-$null
 u.xml
 ui-*.png
 ui-*.xml

@@ -197,6 +197,7 @@ fun PindouApp(vm: AppViewModel) {
                         Screen.PARAMS -> ParamsScreen(vm)
                         Screen.PREVIEW -> PreviewScreen(vm)
                         Screen.EDITOR -> com.pindou.app.ui.editor.EditorScreen(vm)
+                        Screen.STUDIO -> com.pindou.app.ui.studio.StudioScreen(vm)
                         Screen.CONSTRUCTION -> com.pindou.app.ui.build.ConstructionScreen(vm)
                         Screen.CHART_CALIBRATE -> ChartCalibrateScreen(vm)
                         Screen.PIXEL_CALIBRATE -> PixelCalibrateScreen(vm)
@@ -204,8 +205,10 @@ fun PindouApp(vm: AppViewModel) {
                 }
             }
 
-            // 玻璃底栏叠在内容之上，列表从半透明背景后面滚过
-            if (vm.screen == Screen.HOME) {
+            // 玻璃底栏叠在内容之上，列表从半透明背景后面滚过。
+            // 项目库多选时让位给批量操作条，避免误触「创建」丢掉整批选择。
+            val selectionBarActive = vm.homeTab == HomeTab.LIBRARY && vm.librarySelecting
+            if (vm.screen == Screen.HOME && !selectionBarActive) {
                 GlassBottomBar(
                     hazeState = hazeState,
                     current = vm.homeTab,

@@ -2,7 +2,9 @@ package com.pindou.app.core.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -20,6 +22,15 @@ class SettingsStore(private val context: Context) {
         val PALETTE_BRAND = stringPreferencesKey("default_palette_brand")
         val THEME_MODE = stringPreferencesKey("theme_mode")       // system | light | dark
         val REFRESH_MODE = stringPreferencesKey("refresh_mode")   // system | 60 | 90 | 120
+        val AI_SUBJECT = booleanPreferencesKey("ai_subject_segmentation")
+        // 浮窗位置用 0..1 的比例保存，换屏幕/横竖屏后仍落在可见范围内。
+        // -1 表示尚未自定义，使用默认左/右居中。
+        val STUDIO_TOOL_X = floatPreferencesKey("studio_tool_x")
+        val STUDIO_TOOL_Y = floatPreferencesKey("studio_tool_y")
+        val STUDIO_COLOR_X = floatPreferencesKey("studio_color_x")
+        val STUDIO_COLOR_Y = floatPreferencesKey("studio_color_y")
+        val STUDIO_TOOL_COLLAPSED = booleanPreferencesKey("studio_tool_collapsed")
+        val STUDIO_COLOR_COLLAPSED = booleanPreferencesKey("studio_color_collapsed")
 
         // 统计只在“新建项目落库”时累加，重新生成/改参数不会重复计数。
         val STAT_TOTAL = intPreferencesKey("stat_total")
@@ -74,7 +85,14 @@ class SettingsStore(private val context: Context) {
         val defaultGridH: Int = 48,
         val defaultPaletteBrand: String = "MARD",
         val themeMode: String = "system",
-        val refreshMode: String = "120",
+        val refreshMode: String = "system",
+        val aiSubjectEnabled: Boolean = false,
+        val studioToolX: Float = -1f,
+        val studioToolY: Float = -1f,
+        val studioColorX: Float = -1f,
+        val studioColorY: Float = -1f,
+        val studioToolCollapsed: Boolean = false,
+        val studioColorCollapsed: Boolean = false,
     )
 
     val flow: Flow<Snapshot> = context.dataStore.data.map { p -> p.toSnapshot() }
@@ -86,7 +104,14 @@ class SettingsStore(private val context: Context) {
         defaultGridH = this[GRID_H] ?: 48,
         defaultPaletteBrand = this[PALETTE_BRAND] ?: "MARD",
         themeMode = this[THEME_MODE] ?: "system",
-        refreshMode = this[REFRESH_MODE] ?: "120",
+        refreshMode = this[REFRESH_MODE] ?: "system",
+        aiSubjectEnabled = this[AI_SUBJECT] ?: false,
+        studioToolX = this[STUDIO_TOOL_X] ?: -1f,
+        studioToolY = this[STUDIO_TOOL_Y] ?: -1f,
+        studioColorX = this[STUDIO_COLOR_X] ?: -1f,
+        studioColorY = this[STUDIO_COLOR_Y] ?: -1f,
+        studioToolCollapsed = this[STUDIO_TOOL_COLLAPSED] ?: false,
+        studioColorCollapsed = this[STUDIO_COLOR_COLLAPSED] ?: false,
     )
 
     private fun Preferences.toStats() = Stats(
@@ -109,6 +134,24 @@ class SettingsStore(private val context: Context) {
     suspend fun setThemeMode(mode: String) = context.dataStore.edit { it[THEME_MODE] = mode }
 
     suspend fun setRefreshMode(mode: String) = context.dataStore.edit { it[REFRESH_MODE] = mode }
+
+    suspend fun setAiSubjectEnabled(enabled: Boolean) =
+        context.dataStore.edit { it[AI_SUBJECT] = enabled }
+
+    suspend fun setStudioRailPositions(toolX: Float, toolY: Float, colorX: Float, colorY: Float) =
+        context.dataStore.edit {
+            // -1 是“未自定义”哨兵，保留；有效位置才夹到 0..1
+            it[STUDIO_TOOL_X] = toolX.coerceIn(-1f, 1f)
+            it[STUDIO_TOOL_Y] = toolY.coerceIn(-1f, 1f)
+            it[STUDIO_COLOR_X] = colorX.coerceIn(-1f, 1f)
+            it[STUDIO_COLOR_Y] = colorY.coerceIn(-1f, 1f)
+        }
+
+    suspend fun setStudioRailCollapsed(toolCollapsed: Boolean, colorCollapsed: Boolean) =
+        context.dataStore.edit {
+            it[STUDIO_TOOL_COLLAPSED] = toolCollapsed
+            it[STUDIO_COLOR_COLLAPSED] = colorCollapsed
+        }
 
     /**
      * 记录一次“新图纸落库”。

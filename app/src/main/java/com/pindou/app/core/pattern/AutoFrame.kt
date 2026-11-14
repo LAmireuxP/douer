@@ -45,6 +45,8 @@ object AutoFrame {
         val trimmed: Boolean,
         val subjectW: Int,
         val subjectH: Int,
+        /** 与输出画布逐像素对齐的主体掩码；未启用 AI 时为 null */
+        val subjectMask: SubjectMask? = null,
     )
 
     fun apply(pixels: IntArray, srcW: Int, srcH: Int, gridW: Int, gridH: Int): Result {
@@ -110,10 +112,79 @@ object AutoFrame {
         val sh = sy1 - sy0
         if (sw < 8 || sh < 8) return plain
 
+        return cropAndPad(
+            pixels, srcW, srcH, sx0, sy0, sw, sh, bg, gridW, gridH, null,
+        )
+    }
+
+    /**
+     * AI 主体掩码取景：用掩码包围盒代替边界色探测。
+     *
+     * 传统边界色模型在"主体内部和背景同色"时会失效；掩码直接给出主体范围，
+     * 包围盒和补边逻辑与 [apply] 共用，输出尺寸/比例规则完全一致。
+     */
+    fun applyWithMask(
+        pixels: IntArray,
+        srcW: Int,
+        srcH: Int,
+        gridW: Int,
+        gridH: Int,
+        mask: SubjectMask,
+    ): Result {
+        val plain = Result(pixels, srcW, srcH, false, srcW, srcH, mask)
+        if (srcW < 24 || srcH < 24) return plain
+        if (gridW <= 0 || gridH <= 0) return plain
+        if (mask.width != srcW || mask.height != srcH || mask.data.size < srcW * srcH) return plain
+        if (PixelArtDetector.detect(pixels, srcW, srcH) != null) return plain
+
+        var x0 = srcW
+        var x1 = -1
+        var y0 = srcH
+        var y1 = -1
+        var fg = 0
+        for (y in 0 until srcH) {
+            val row = y * srcW
+            for (x in 0 until srcW) {
+                if (mask.data[row + x].toInt() == 0) continue
+                fg++
+                if (x < x0) x0 = x
+                if (x > x1) x1 = x
+                if (y < y0) y0 = y
+                if (y > y1) y1 = y
+            }
+        }
+        if (x1 < x0 || fg * 50L < srcW.toLong() * srcH) return plain
+
+        val sw = x1 - x0 + 1
+        val sh = y1 - y0 + 1
+        if (sw < 8 || sh < 8) return plain
         val keepW = sw.toDouble() / srcW
         val keepH = sh.toDouble() / srcH
         if (keepW > 1 - MIN_TRIM_SHARE && keepH > 1 - MIN_TRIM_SHARE) return plain
 
+        val bg = borderMedian(pixels, srcW, srcH)
+        return cropAndPad(
+            pixels, srcW, srcH, x0, y0, sw, sh, bg, gridW, gridH, mask,
+        )
+    }
+
+    /**
+     * 按主体包围盒裁切，再按 gridW:gridH 比例补背景色。
+     * [mask] 非空时同步生成与输出画布逐像素对齐的掩码。
+     */
+    private fun cropAndPad(
+        pixels: IntArray,
+        srcW: Int,
+        srcH: Int,
+        sx0: Int,
+        sy0: Int,
+        sw: Int,
+        sh: Int,
+        bg: Int,
+        gridW: Int,
+        gridH: Int,
+        mask: SubjectMask?,
+    ): Result {
         // 目标比例：主体按比例撑满，剩下的用背景色补，图案本身不变形
         val aspect = gridW.toDouble() / gridH
         var boxW = max(sw.toDouble(), sh * aspect) * (1 + 2 * MARGIN)
@@ -125,6 +196,7 @@ object AutoFrame {
         boxH = oh.toDouble()
 
         val out = IntArray(ow * oh) { bg }
+        val outMask = if (mask != null) ByteArray(ow * oh) else null
         // 主体在输出画布里的左上角（居中）
         val dx = (boxW - sw) / 2.0
         val dy = (boxH - sh) / 2.0
@@ -137,9 +209,17 @@ object AutoFrame {
                 val lx = ((ox + 0.5) * boxW / ow - dx).toInt()
                 if (lx < 0 || lx >= sw) continue
                 out[outRow + ox] = pixels[srcRow + sx0 + lx]
+                if (outMask != null && mask != null &&
+                    mask.data[(sy0 + ly) * srcW + sx0 + lx].toInt() != 0
+                ) {
+                    outMask[outRow + ox] = 1
+                }
             }
         }
-        return Result(out, ow, oh, true, sw, sh)
+        return Result(
+            out, ow, oh, true, sw, sh,
+            outMask?.let { SubjectMask(ow, oh, it) },
+        )
     }
 
     /**

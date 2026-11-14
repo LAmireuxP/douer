@@ -5,6 +5,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -18,9 +19,12 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.dp
 import com.pindou.app.core.pattern.PatternResult
+import com.pindou.app.core.pattern.ColorLabelLayout
 import com.pindou.app.ui.CellCodeDrawer.drawCellCode
 import kotlin.math.hypot
 import kotlin.math.max
@@ -34,6 +38,58 @@ private val EmptyCellB = Color(0xFFE4EAF2)
 private class PreviewTransform {
     var scale by mutableFloatStateOf(1f)
     var offset by mutableStateOf(Offset.Zero)
+}
+
+private fun previewAvail(canvas: Offset, gutter: Float): Offset = Offset(
+    (canvas.x - gutter * 2f).coerceAtLeast(1f),
+    (canvas.y - gutter * 2f).coerceAtLeast(1f),
+)
+
+private fun previewBase(
+    canvas: Offset,
+    result: PatternResult,
+    gutter: Float,
+): Offset {
+    val avail = previewAvail(canvas, gutter)
+    val cell = min(avail.x / result.width, avail.y / result.height)
+    return Offset(
+        gutter + (avail.x - cell * result.width) / 2f,
+        gutter + (avail.y - cell * result.height) / 2f,
+    )
+}
+
+private fun previewCell(
+    canvas: Offset,
+    result: PatternResult,
+    scale: Float,
+    gutter: Float,
+): Float {
+    val avail = previewAvail(canvas, gutter)
+    return min(avail.x / result.width, avail.y / result.height) * scale
+}
+
+private fun clampPreview(
+    canvas: Offset,
+    result: PatternResult,
+    tf: PreviewTransform,
+    gutter: Float,
+) {
+    val cell = previewCell(canvas, result, tf.scale, gutter)
+    val base = previewBase(canvas, result, gutter)
+    val contentW = cell * result.width
+    val contentH = cell * result.height
+    val avail = previewAvail(canvas, gutter)
+    val x = if (contentW <= avail.x) {
+        gutter + (avail.x - contentW) / 2f
+    } else {
+        (base.x + tf.offset.x).coerceIn(canvas.x - gutter - contentW, gutter)
+    }
+    val y = if (contentH <= avail.y) {
+        gutter + (avail.y - contentH) / 2f
+    } else {
+        (base.y + tf.offset.y).coerceIn(canvas.y - gutter - contentH, gutter)
+    }
+    tf.offset = Offset(x - base.x, y - base.y)
 }
 
 /**
@@ -54,6 +110,13 @@ fun PatternCanvas(
     val measurer = rememberTextMeasurer()
     val layoutCache = remember { mutableMapOf<Pair<String, Int>, TextLayoutResult>() }
     val transform = remember(result) { PreviewTransform() }
+    val labels = remember(result) {
+        ColorLabelLayout.labelMask(result.cells, result.width, result.height)
+    }
+    val gutter = with(LocalDensity.current) { GridRuler.GUTTER_DP.dp.toPx() }
+    val rulerCache = remember { mutableMapOf<Pair<String, Int>, TextLayoutResult>() }
+    val rulerTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val rulerBandColor = MaterialTheme.colorScheme.surface
 
     Canvas(
         modifier
@@ -85,27 +148,43 @@ fun PatternCanvas(
                                 (a.x - b.x).toDouble(),
                                 (a.y - b.y).toDouble(),
                             ).toFloat()
+                            val canvas = Offset(size.width.toFloat(), size.height.toFloat())
                             if (prevDist > 0f) {
                                 val old = transform.scale
                                 val new = (old * (dist / prevDist)).coerceIn(1f, 20f)
                                 val k = new / old
-                                transform.offset = Offset(
-                                    centroid.x - (centroid.x - transform.offset.x) * k,
-                                    centroid.y - (centroid.y - transform.offset.y) * k,
+                                val base = previewBase(canvas, result, gutter)
+                                val origin = base + transform.offset
+                                val newOrigin = Offset(
+                                    centroid.x - (centroid.x - origin.x) * k,
+                                    centroid.y - (centroid.y - origin.y) * k,
                                 )
                                 transform.scale = new
+                                transform.offset = newOrigin - base
                             }
                             if (prevCentroid != Offset.Zero) {
                                 transform.offset += centroid - prevCentroid
                             }
                             prevDist = dist
                             prevCentroid = centroid
+                            clampPreview(
+                                Offset(size.width.toFloat(), size.height.toFloat()),
+                                result,
+                                transform,
+                                gutter,
+                            )
                             event.changes.forEach { if (it.positionChanged()) it.consume() }
                         } else if (isTransform) {
                             // 缩放后余下的单指继续平移画布
                             val c = pressed[0]
                             transform.offset += c.position - c.previousPosition
                             if (c.positionChanged()) c.consume()
+                            clampPreview(
+                                Offset(size.width.toFloat(), size.height.toFloat()),
+                                result,
+                                transform,
+                                gutter,
+                            )
                             prevDist = 0f
                             prevCentroid = Offset.Zero
                         } else {
@@ -113,18 +192,20 @@ fun PatternCanvas(
                             prevDist = 0f
                             prevCentroid = Offset.Zero
                         }
-                        // 平移钳制：内容始终铺满画布（1 倍时自动回正）
-                        val s = transform.scale
-                        transform.offset = Offset(
-                            transform.offset.x.coerceIn(size.width - size.width * s, 0f),
-                            transform.offset.y.coerceIn(size.height - size.height * s, 0f),
+                        // 平移钳制：内容始终铺满可用区域（1 倍时自动回正）
+                        clampPreview(
+                            Offset(size.width.toFloat(), size.height.toFloat()),
+                            result,
+                            transform,
+                            gutter,
                         )
                     }
                 }
             },
     ) {
-        val cell = size.width / result.width * transform.scale
-        val origin = transform.offset
+        val canvas = Offset(size.width, size.height)
+        val cell = previewCell(canvas, result, transform.scale, gutter)
+        val origin = previewBase(canvas, result, gutter) + transform.offset
 
         // 只算可见格范围（放大时避免全量重绘）
         val firstX = max(0, (-origin.x / cell).toInt())
@@ -137,8 +218,9 @@ fun PatternCanvas(
                 val idx = result.cells[y * result.width + x]
                 val left = origin.x + x * cell
                 val top = origin.y + y * cell
-                val cellColor = if (idx >= 0) {
-                    Color(result.palette.colors[idx].argb)
+                val entry = if (idx >= 0) result.palette.colors.getOrNull(idx) else null
+                val cellColor = if (entry != null) {
+                    Color(entry.argb)
                 } else {
                     if ((x + y) % 2 == 0) EmptyCellA else EmptyCellB
                 }
@@ -163,17 +245,33 @@ fun PatternCanvas(
                 for (x in firstX..lastX) {
                     val idx = result.cells[y * result.width + x]
                     if (idx < 0) continue
+                    if (!labels[y * result.width + x]) continue
+                    val entry = result.palette.colors.getOrNull(idx) ?: continue
                     drawCellCode(
                         measurer = measurer,
-                        code = result.palette.colors[idx].code,
+                        code = entry.code,
                         left = origin.x + x * cell,
                         top = origin.y + y * cell,
                         cell = cell,
-                        argb = result.palette.colors[idx].argb,
+                        argb = entry.argb,
                         layoutCache = layoutCache,
                     )
                 }
             }
+        }
+
+        with(GridRuler) {
+            drawGridRuler(
+                origin = origin,
+                cell = cell,
+                cols = result.width,
+                rows = result.height,
+                gutter = gutter,
+                measurer = measurer,
+                cache = rulerCache,
+                textColor = rulerTextColor,
+                bandColor = rulerBandColor,
+            )
         }
     }
 }

@@ -1,372 +1,369 @@
 package com.pindou.app.ui
 
-import com.pindou.app.ui.icon.MorphIcons
+import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.FilterQuality
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.gestures.detectDragGestures
 import com.pindou.app.core.chart.ChartRecognizer
-import com.pindou.app.ui.shadcn.Button
-import com.pindou.app.ui.shadcn.ShCard
 import com.pindou.app.ui.theme.ClayColors
-import com.pindou.app.ui.theme.Spacing
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * 色号图校准页。
+ * 色号图识别校准页。
  *
- * 红线压在图纸的格线上，拖不动就按方向键；
- * 列/行数决定网格密度，格子大小决定一格占多少源图像素；智能对齐按梯度
- * 把线吸到真实格线上。底下实时显示采到多少个色块，调错了一眼能看出来。
+ * 与像素图识别共用同一套顶栏、说明、底部面板和步进器：单指拖网格、
+ * 双指缩放图片、按 5×5 大格增删行列、格子始终保持正方形。区别只在
+ * 采样对象是「格子里的纯色 + 色号文字」。
  */
 @Composable
 fun ChartCalibrateScreen(vm: AppViewModel) {
     val bitmap = vm.chartBitmap
     val grid = vm.chartGrid
+    val sample = vm.chartSample
     val imgW = vm.chartW
     val imgH = vm.chartH
-    val sample = vm.chartSample
 
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+    var sheetHeightPx by remember { mutableIntStateOf(0) }
+    var zoom by remember(bitmap) { mutableFloatStateOf(1f) }
+    var viewPan by remember(bitmap) { mutableStateOf(Offset.Zero) }
+    var showPreview by remember(bitmap) { mutableStateOf(false) }
 
-    // 整页可滚：控件卡不设 maxHeight，避免「空白阈值」被卡片边缘切一半
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
+    val density = LocalDensity.current
+    val sheetPx = if (sheetHeightPx > 0) {
+        sheetHeightPx
+    } else {
+        with(density) { 322.dp.roundToPx() }
+    }
+    val canvasW = canvasSize.width.toFloat()
+    val canvasH = canvasSize.height.toFloat()
+    val stageBottom = (canvasH - sheetPx).coerceAtLeast(canvasH * 0.26f)
+    val visibleH = (stageBottom - with(density) { 18.dp.toPx() }).coerceAtLeast(1f)
+    val viewCenter = Offset(canvasW / 2f, visibleH / 2f)
+    // 首次识别会把 43 列补成 45 列。取景要按「图片 + 补出来的空格」
+    // 一起算，否则最右边一整块 5×5 会被屏幕边缘裁掉。
+    val frameW = if (grid != null) {
+        max(imgW.toFloat(), grid.cols * grid.cellW.toFloat())
+    } else {
+        imgW.toFloat()
+    }
+    val frameH = if (grid != null) {
+        max(imgH.toFloat(), grid.rows * grid.cellH.toFloat())
+    } else {
+        imgH.toFloat()
+    }
+    val baseFit = if (frameW > 0f && frameH > 0f && canvasW > 0f && visibleH > 0f) {
+        min(
+            (canvasW - with(density) { 28.dp.toPx() }) / frameW,
+            (visibleH - with(density) { 24.dp.toPx() }) / frameH,
+        )
+    } else {
+        1f
+    }
+
+    CalibrationPage(
+        title = "色号图识别",
+        busy = vm.chartBusy,
+        actionLabel = "生成图纸",
+        actionEnabled = sample != null && (sample.filledCells > 0),
+        onBack = { vm.handleBack() },
+        onAction = { vm.chartToPattern() },
+        guidePrimary = calibrationGuideText(
+            prefix = "放大，让网格线贴住色号格；调",
+            accent = "列数、行数或一格大小",
+            suffix = "，格子自动保持正方形。",
+        ),
+        guideSecondary = "双指缩放 · 单指拖网格 · 「看图纸」预览最终效果",
     ) {
-        // ---- 顶栏 ----
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { canvasSize = it },
+        ) {
+            if (bitmap == null || grid == null || imgW <= 0 || imgH <= 0) {
+                CalibrationEmptyState(
+                    message = "没有可校准的色号图，请重新导入",
+                    onHome = { vm.backToHome() },
+                )
+            } else {
+                val image = remember(bitmap) { bitmap.asImageBitmap() }
+                // 预览和最终「生成图纸」采的是同一批格子颜色；空格外用白底，
+                // 这样用户能直接看出网格有没有压偏。
+                val previewBitmap = remember(sample, grid) {
+                    if (sample == null ||
+                        sample.cols != grid.cols || sample.rows != grid.rows ||
+                        sample.argb.size != grid.cols * grid.rows
+                    ) {
+                        null
+                    } else {
+                        val pixels = IntArray(sample.argb.size) { i ->
+                            if (sample.empty[i]) 0xFFFFFFFF.toInt() else sample.argb[i]
+                        }
+                        Bitmap.createBitmap(
+                            pixels,
+                            sample.cols,
+                            sample.rows,
+                            Bitmap.Config.ARGB_8888,
+                        )
+                    }
+                }
+
+                Canvas(
+                    Modifier
+                        .fillMaxSize()
+                        .clipToBounds()
+                        .background(ClayColors.Stage)
+                        .calibrationGestures(
+                            canvasSize = canvasSize,
+                            imgW = imgW,
+                            imgH = imgH,
+                            baseFit = baseFit,
+                            zoom = zoom,
+                            pan = viewPan,
+                            viewCenter = viewCenter,
+                            visibleH = visibleH,
+                            canvasW = canvasW,
+                            onPan = { dx, dy -> vm.chartMoveBy(dx, dy) },
+                            onZoom = { next, nextPan ->
+                                zoom = next
+                                viewPan = nextPan
+                            },
+                        ),
+                ) {
+                    val scale = baseFit * zoom
+                    val drawW = imgW * scale
+                    val drawH = imgH * scale
+                    val left = viewCenter.x + viewPan.x - drawW / 2f
+                    val top = viewCenter.y + viewPan.y - drawH / 2f
+                    val right = left + drawW
+                    val bottom = top + drawH
+                    val originX = left + grid.offsetX.toFloat() * scale
+                    val originY = top + grid.offsetY.toFloat() * scale
+                    val gridW = grid.cols * grid.cellW.toFloat() * scale
+                    val gridH = grid.rows * grid.cellH.toFloat() * scale
+
+                    // 和像素图识别一样固定用白纸：色号图的 sample.paper
+                    // 可能取到图纸本身的花色，不能拿它当透明区域的底色。
+                    drawRect(
+                        color = Color.White,
+                        topLeft = Offset(originX, originY),
+                        size = Size(gridW, gridH),
+                    )
+
+                    if (showPreview && previewBitmap != null) {
+                        drawImage(
+                            image = previewBitmap.asImageBitmap(),
+                            srcOffset = IntOffset.Zero,
+                            srcSize = IntSize(previewBitmap.width, previewBitmap.height),
+                            dstOffset = IntOffset(
+                                originX.roundToInt(),
+                                originY.roundToInt(),
+                            ),
+                            dstSize = IntSize(
+                                gridW.roundToInt().coerceAtLeast(1),
+                                gridH.roundToInt().coerceAtLeast(1),
+                            ),
+                            filterQuality = FilterQuality.None,
+                        )
+                    } else {
+                        drawImage(
+                            image = image,
+                            srcOffset = IntOffset.Zero,
+                            srcSize = IntSize(image.width, image.height),
+                            dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
+                            dstSize = IntSize(
+                                drawW.roundToInt().coerceAtLeast(1),
+                                drawH.roundToInt().coerceAtLeast(1),
+                            ),
+                            filterQuality = FilterQuality.None,
+                        )
+                    }
+
+                    drawCalibrationGrid(
+                        imageLeft = left,
+                        imageTop = top,
+                        imageRight = right,
+                        imageBottom = bottom,
+                        scale = scale,
+                        grid = CalibrationGridGeometry(
+                            cols = grid.cols,
+                            rows = grid.rows,
+                            cellW = grid.cellW,
+                            cellH = grid.cellH,
+                            offsetX = grid.offsetX,
+                            offsetY = grid.offsetY,
+                        ),
+                        clipBottom = stageBottom,
+                        clipToImage = false,
+                    )
+                }
+
+                if (previewBitmap != null) {
+                    CalibrationPreviewToggle(
+                        showingPreview = showPreview,
+                        onToggle = { showPreview = !showPreview },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 10.dp, end = 14.dp),
+                    )
+                }
+
+                ChartCalibrationSheet(
+                    vm = vm,
+                    grid = grid,
+                    sample = sample,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .onSizeChanged { sheetHeightPx = it.height },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChartCalibrationSheet(
+    vm: AppViewModel,
+    grid: ChartRecognizer.ChartGrid,
+    sample: ChartRecognizer.ChartSample?,
+    modifier: Modifier = Modifier,
+) {
+    val smartOn = vm.chartAutoAligned || vm.chartRefineRunning
+    CalibrationSheetFrame(modifier) {
+        CalibrationHeaderRow(
+            sizeLabel = "${grid.cols} × ${grid.rows}",
+            badge = when {
+                vm.chartBusy -> "采样中"
+                vm.chartRefineRunning -> "对齐中"
+                vm.chartAutoAligned -> "已吸附"
+                vm.chartManual -> "手动网格"
+                vm.chartDetected -> "自动识别"
+                else -> "兜底网格"
+            },
+            summary = when {
+                vm.chartBusy -> "· 采样中"
+                sample != null -> "· ${sample.filledCells} 格 · " +
+                    "${sample.cols * sample.rows - sample.filledCells} 空"
+                else -> ""
+            },
+            redetectEnabled = !vm.chartBusy,
+            onRedetect = { vm.chartRedetect() },
+        )
+
+        CalibrationNudgeRow { dx, dy -> vm.chartNudge(dx, dy) }
+
+        CalibrationDivider()
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = Spacing.md, vertical = Spacing.sm),
+                .height(112.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .clickable { vm.handleBack() },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(MorphIcons.ArrowLeft, contentDescription = "返回", tint = MaterialTheme.colorScheme.onSurface)
-            }
-            Column(Modifier.padding(start = Spacing.xs)) {
-                Text("校准网格", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                Text(
-                    if (vm.chartDetected) "红线压住图纸的格线" else "自动识别失败，请手动调列数",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(Modifier.weight(1f))
-            Button(
-                onClick = { vm.chartToPattern() },
-                enabled = sample != null && !vm.chartBusy && (sample?.filledCells ?: 0) > 0,
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-            ) {
-                Text("生成图纸", style = MaterialTheme.typography.labelLarge)
-            }
-        }
-
-        // ---- 图纸 + 红线网格 ----
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(360.dp)
-                .padding(horizontal = Spacing.md)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xFF0E1419))
-                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
-                .onSizeChanged { canvasSize = it }
-                // key 不能带 grid：拖动会改 grid，key 一变手势协程就被重启，
-                // 一整段拖动只生效第一帧，表现为"拖不动"。只按画布尺寸重建。
-                .pointerInput(canvasSize, imgW, imgH) {
-                    if (vm.chartGrid == null || canvasSize.width == 0) return@pointerInput
-                    val fit = min(
-                        canvasSize.width.toFloat() / imgW,
-                        canvasSize.height.toFloat() / imgH,
-                    )
-                    if (fit <= 0f) return@pointerInput
-                    detectDragGestures { change, drag ->
-                        change.consume()
-                        vm.chartMoveBy(drag.x / fit, drag.y / fit)
+            CalibrationBigStepper(
+                step = 2,
+                label = "网格列数",
+                unit = null,
+                value = grid.cols.toString(),
+                onStep = { delta ->
+                    val next = if (delta > 0) {
+                        (grid.cols / 5 + 1) * 5
+                    } else {
+                        ((grid.cols - 1).coerceAtLeast(0) / 5) * 5
                     }
+                    vm.chartSetCols(next.coerceIn(3, 400))
                 },
-            contentAlignment = Alignment.Center,
-        ) {
-            if (bitmap != null && grid != null && canvasSize.width > 0 && canvasSize.height > 0) {
-                val image = remember(bitmap) { bitmap.asImageBitmap() }
-                ChartCanvas(image, imgW, imgH, grid, canvasSize)
-            } else if (bitmap != null) {
-                Text("正在识别…", color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.bodyMedium)
-            }
-        }
-
-        Text(
-            text = if (vm.chartBusy) "采样中…" else
-                "已识别 ${sample?.filledCells ?: 0} 个色块 · 空格 ${sample?.let { it.cols * it.rows - it.filledCells } ?: 0}",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = Spacing.md, vertical = Spacing.xs),
-        )
-
-        // ---- 校准控件 ----
-        ShCard(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Spacing.md)
-                .padding(bottom = Spacing.md),
-        ) {
-            Column(
-                modifier = Modifier
-                    .padding(Spacing.md),
-                verticalArrangement = Arrangement.spacedBy(Spacing.sm),
-            ) {
-                if (grid != null) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column {
-                            Text("网格位置", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(
-                                "拖动图纸也可移动",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.outline,
-                            )
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            NudgeButton(MorphIcons.ChevronLeft, "左移") { vm.chartNudge(-1, 0) }
-                            NudgeButton(MorphIcons.ArrowUp, "上移") { vm.chartNudge(0, -1) }
-                            NudgeButton(MorphIcons.ArrowDown, "下移") { vm.chartNudge(0, 1) }
-                            NudgeButton(MorphIcons.ChevronRight, "右移") { vm.chartNudge(1, 0) }
-                        }
-                    }
-
-                    Divider()
-                    Stepper("网格列数", grid.cols, 3, 400) { vm.chartSetCols(it) }
-                    Stepper("网格行数", grid.rows, 3, 400) { vm.chartSetRows(it) }
-                    Stepper("单元格大小", grid.cellW.roundToInt().coerceAtLeast(1), 4, 512, suffix = "px") {
-                        vm.chartSetCellSize(it.toFloat())
-                    }
-
-                    Divider()
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column {
-                            Text("智能对齐", style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                if (vm.chartRefineRunning) "正在贴合网格线…" else "按格线梯度自动微调",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = vm.chartAutoAligned,
-                            onCheckedChange = { on ->
-                                if (on) vm.chartRefine() else vm.toast = "已关闭智能对齐"
-                            },
-                            enabled = !vm.chartRefineRunning,
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color.White,
-                                checkedTrackColor = ClayColors.Primary,
-                            ),
-                        )
-                    }
-
-                    Divider()
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Text("空白阈值", style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            "${(vm.chartThreshold * 100).roundToInt()}%",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Slider(
-                        value = vm.chartThreshold,
-                        onValueChange = { vm.chartSetThreshold(it) },
-                        valueRange = 0.2f..0.95f,
-                        colors = SliderDefaults.colors(
-                            thumbColor = ClayColors.Primary,
-                            activeTrackColor = ClayColors.Primary,
-                        ),
-                    )
-                    Text(
-                        "白底图纸里，白色豆子和纸背景同色：调高阈值会把白豆也判成空格，调低会把纸边判成色块。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ChartCanvas(
-    image: ImageBitmap,
-    imgW: Int,
-    imgH: Int,
-    grid: ChartRecognizer.ChartGrid,
-    canvasSize: IntSize,
-) {
-    val lineColor = Color(0xFFEF4444)
-    Canvas(Modifier.fillMaxSize()) {
-        val fit = min(size.width / imgW, size.height / imgH)
-        val dstW = (imgW * fit).roundToInt()
-        val dstH = (imgH * fit).roundToInt()
-        val ox = (size.width - dstW) / 2f
-        val oy = (size.height - dstH) / 2f
-        drawImage(
-            image = image,
-            srcOffset = IntOffset.Zero,
-            srcSize = IntSize(imgW, imgH),
-            dstOffset = IntOffset(ox.roundToInt(), oy.roundToInt()),
-            dstSize = IntSize(dstW, dstH),
-            filterQuality = FilterQuality.None,
-        )
-        val stroke = 1.dp.toPx()
-        // 只画落进图内的线：网格挪出去以后不画一屏没用的红线
-        for (k in 0..grid.cols) {
-            val x = ox + (grid.offsetX + k * grid.cellW).toFloat() * fit
-            if (x >= ox && x <= ox + dstW) {
-                drawLine(lineColor, Offset(x, oy), Offset(x, oy + dstH), stroke)
-            }
-        }
-        for (k in 0..grid.rows) {
-            val y = oy + (grid.offsetY + k * grid.cellH).toFloat() * fit
-            if (y >= oy && y <= oy + dstH) {
-                drawLine(lineColor, Offset(ox, y), Offset(ox + dstW, y), stroke)
-            }
-        }
-    }
-}
-
-@Composable
-private fun NudgeButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    desc: String,
-    onClick: () -> Unit,
-) {
-    Box(
-        modifier = Modifier
-            .size(38.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(icon, contentDescription = desc, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
-    }
-}
-
-@Composable
-private fun Stepper(
-    label: String,
-    value: Int,
-    min: Int,
-    max: Int,
-    suffix: String = "",
-    onChange: (Int) -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            StepBtn(MorphIcons.Minus) { onChange((value - 1).coerceAtLeast(min)) }
-            Text(
-                text = "$value$suffix",
-                style = MaterialTheme.typography.titleMedium,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.width(64.dp),
+                modifier = Modifier.weight(1f),
             )
-            StepBtn(MorphIcons.Plus) { onChange((value + 1).coerceAtMost(max)) }
+            Box(
+                Modifier
+                    .width(1.dp)
+                    .height(58.dp)
+                    .background(ClayColors.HairlineSoft),
+            )
+            CalibrationBigStepper(
+                step = 3,
+                label = "网格行数",
+                unit = null,
+                value = grid.rows.toString(),
+                onStep = { delta ->
+                    val next = if (delta > 0) {
+                        (grid.rows / 5 + 1) * 5
+                    } else {
+                        ((grid.rows - 1).coerceAtLeast(0) / 5) * 5
+                    }
+                    vm.chartSetRows(next.coerceIn(3, 400))
+                },
+                modifier = Modifier.weight(1f),
+            )
+            Box(
+                Modifier
+                    .width(1.dp)
+                    .height(58.dp)
+                    .background(ClayColors.HairlineSoft),
+            )
+            CalibrationBigStepper(
+                step = 4,
+                label = "一格大小",
+                unit = "px",
+                value = formatCalibrationCell(grid.cellW),
+                onStep = { delta ->
+                    vm.chartSetCellSize(
+                        (grid.cellW + delta * calibrationCellStep(grid.cellW))
+                            .coerceIn(4.0, 512.0)
+                            .toFloat(),
+                    )
+                },
+                modifier = Modifier.weight(1f),
+            )
         }
-    }
-}
 
-@Composable
-private fun StepBtn(icon: ImageVector, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .size(38.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.size(16.dp),
+        CalibrationSmartRow(
+            checked = smartOn,
+            status = when {
+                vm.chartRefineRunning -> "贴合中"
+                !smartOn -> "已关闭"
+                vm.chartAutoAligned -> "已吸附"
+                else -> "未吸附"
+            },
+            onToggle = { vm.chartSetSmart(!smartOn) },
+        )
+
+        CalibrationThresholdRow(
+            label = "空白阈值",
+            value = vm.chartThreshold,
+            enabled = !vm.chartBusy,
+            onValueChange = { vm.chartSetThreshold(it) },
+            range = 0.2f..0.95f,
         )
     }
-}
-
-@Composable
-private fun Divider() {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(1.dp)
-            .background(MaterialTheme.colorScheme.outline),
-    )
 }

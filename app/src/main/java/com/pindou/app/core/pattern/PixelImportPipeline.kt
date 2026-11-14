@@ -1,9 +1,9 @@
 package com.pindou.app.core.pattern
 
-import com.pindou.app.core.image.CropRect
-import com.pindou.app.core.image.ImageTransforms
 import com.pindou.app.core.image.TransformedImage
 import com.pindou.app.core.palette.BeadPalette
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -44,6 +44,10 @@ object PixelImportPipeline {
         val cropped: TransformedImage,
         val result: PatternResult,
         val previewArgb: IntArray,
+        /** 收掉四周空白格后的最终图纸；确认落库/进编辑器用这一份 */
+        val finalGrid: PixelCalibration.Grid = grid,
+        val finalCropped: TransformedImage = cropped,
+        val finalResult: PatternResult = result,
     )
 
     /**
@@ -77,9 +81,9 @@ object PixelImportPipeline {
                 method = PixelGridInspector.Method.MANUAL
             }
         }
-        // 页面上看到的网格就是完成时裁的网格：先把整张网格收进图内，
-        // 避免用户对齐完、点完成时格子突然缩小或平移。
-        grid = grid.fittedWithin(w, h)
+        // 首次识别就把列/行补到 5×5 的整数倍。格子大小和原点保持不动，
+        // 不能为了塞进图片压缩 cellW/cellH；convert() 支持图外格子填白。
+        grid = grid.withCompleteBlocks()
         return Prepared(
             grid = grid,
             method = method,
@@ -105,22 +109,37 @@ object PixelImportPipeline {
         onStage: (GenerationStage, Float) -> Unit = { _, _ -> },
     ): Conversion {
         require(w > 0 && h > 0 && pixels.size == w * h) { "源图像素尺寸不符" }
-        val fitted = grid.fittedWithin(w, h)
-
-        // 与确认按钮原来那段裁图逐行一致：取整后再夹一次，保证裁出的
-        // 宽高等于网格覆盖范围，采样块长不会被边缘余数拉偏。
-        val l = fitted.offsetX.roundToInt().coerceIn(0, w - 1)
-        val t = fitted.offsetY.roundToInt().coerceIn(0, h - 1)
-        val r = fitted.right.roundToInt().coerceIn(l + 1, w)
-        val b = fitted.bottom.roundToInt().coerceIn(t + 1, h)
-        val cropped = ImageTransforms.crop(
-            pixels, w, h,
-            CropRect(l.toFloat(), t.toFloat(), r.toFloat(), b.toFloat()),
-        )
+        // 网格允许被拖到图片边缘外：按网格覆盖范围铺一张等大的画布，
+        // 图片外的格子保持空白，这样拖动对齐后的生成结果和屏幕上的
+        // 网格完全一致，不会被强制拉回图内。
+        val left = grid.offsetX.roundToInt()
+        val top = grid.offsetY.roundToInt()
+        val outW = (grid.cols * grid.cellW).roundToInt().coerceAtLeast(1)
+        val outH = (grid.rows * grid.cellH).roundToInt().coerceAtLeast(1)
+        // 图外格子填白：透明像素在色卡量化里容易落成黑色，预览会出现
+        // 一条黑边；像素画导入的底通常是白底，填白更接近用户预期。
+        val padded = IntArray(outW * outH) { 0xFFFFFFFF.toInt() }
+        val srcL = max(0, left)
+        val srcT = max(0, top)
+        val srcR = min(w, left + outW)
+        val srcB = min(h, top + outH)
+        if (srcR > srcL && srcB > srcT) {
+            val copyW = srcR - srcL
+            for (y in srcT until srcB) {
+                System.arraycopy(
+                    pixels,
+                    y * w + srcL,
+                    padded,
+                    (y - top) * outW + (srcL - left),
+                    copyW,
+                )
+            }
+        }
+        val cropped = TransformedImage(padded, outW, outH)
 
         val exact = options.copy(
-            gridW = fitted.cols.coerceIn(1, 500),
-            gridH = fitted.rows.coerceIn(1, 500),
+            gridW = grid.cols.coerceIn(1, 500),
+            gridH = grid.rows.coerceIn(1, 500),
             // 限色/抖动/去背是照片参数。用户上一轮调过照片后直接导像素画，
             // 这些开关会原样带进来，把 1:1 的色块抖散或吃掉，这里统一关掉。
             maxColors = null,
@@ -128,25 +147,111 @@ object PixelImportPipeline {
             removeBackground = false,
             filterLevel = FilterLevel.NONE,
             exactArt = true,
-            pixelGrid = fitted.cols to fitted.rows,
+            pixelGrid = grid.cols to grid.rows,
             autoFrame = false,
             // 画像素是作者选好的固定颜色，曝光修正会整体提亮，把原色拉偏；
             // 这条管线只做 1:1 还原。
             autoExposure = false,
         )
-        val result = PatternGenerator.generate(
+        val generated = PatternGenerator.generate(
             cropped.pixels, cropped.width, cropped.height,
             exact, palette, onStage,
         )
-        val argb = IntArray(result.cells.size)
+        // 补到 5×5 的格子可能完全落在原图外；生成阶段把它们填成了
+        // 白色，这里按「与原图交集不足 60%」统一改回空格，避免多出
+        // 一圈白豆。阈值和 PixelGridInspector.analyze 保持一致。
+        val cells = generated.cells
+        for (row in 0 until grid.rows) {
+            val y0 = grid.offsetY + row * grid.cellH
+            val y1 = y0 + grid.cellH
+            for (col in 0 until grid.cols) {
+                val x0 = grid.offsetX + col * grid.cellW
+                val x1 = x0 + grid.cellW
+                val overlapW = min(x1, w.toDouble()) - max(x0, 0.0)
+                val overlapH = min(y1, h.toDouble()) - max(y0, 0.0)
+                val area = grid.cellW * grid.cellH
+                if (overlapW <= 0.0 || overlapH <= 0.0 ||
+                    overlapW * overlapH < area * 0.60
+                ) {
+                    cells[row * grid.cols + col] = -1
+                }
+            }
+        }
+        val fullResult = generated.copy(cells = cells)
+        val argb = IntArray(fullResult.cells.size)
         for (i in argb.indices) {
-            val idx = result.cells[i]
-            argb[i] = if (idx in result.palette.colors.indices) {
-                result.palette.colors[idx].argb
+            val idx = fullResult.cells[i]
+            argb[i] = if (idx in fullResult.palette.colors.indices) {
+                fullResult.palette.colors[idx].argb
             } else {
                 0
             }
         }
-        return Conversion(fitted, cropped, result, argb)
+
+        // 校准网格为了补完整 5×5 块，可能在图外多出整行/整列；这些格子
+        // 在落库前全部收掉，图纸尺寸紧贴有颜色的内容。校准页仍用上面的
+        // fullResult / previewArgb 显示完整网格，确认时才切到 final*。
+        val trim = PatternTrim.trimEmptyEdges(cells, grid.cols, grid.rows)
+        val finalResult = if (trim.trimmed) {
+            fullResult.copy(
+                width = trim.width,
+                height = trim.height,
+                cells = trim.cells,
+                framed = true,
+            )
+        } else {
+            fullResult
+        }
+        val (finalCropped, finalGrid) = if (trim.trimmed) {
+            cropToContent(cropped, grid, trim)
+        } else {
+            cropped to grid
+        }
+        return Conversion(
+            grid = grid,
+            cropped = cropped,
+            result = fullResult,
+            previewArgb = argb,
+            finalGrid = finalGrid,
+            finalCropped = finalCropped,
+            finalResult = finalResult,
+        )
+    }
+
+    /**
+     * 按收边后的格子范围裁裁图，并给出与裁图一致的网格。
+     *
+     * 裁图本身是按整张网格铺出来的像素图，格宽可能带小数；这里按格数
+     * 比例换算回像素边界，避免直接乘 cellW 后因四舍五入切掉半格。
+     */
+    private fun cropToContent(
+        image: TransformedImage,
+        grid: PixelCalibration.Grid,
+        trim: PatternTrim.Result,
+    ): Pair<TransformedImage, PixelCalibration.Grid> {
+        val x0 = (trim.left.toDouble() / grid.cols * image.width)
+            .roundToInt().coerceIn(0, image.width - 1)
+        val x1 = ((trim.left + trim.width).toDouble() / grid.cols * image.width)
+            .roundToInt().coerceIn(x0 + 1, image.width)
+        val y0 = (trim.top.toDouble() / grid.rows * image.height)
+            .roundToInt().coerceIn(0, image.height - 1)
+        val y1 = ((trim.top + trim.height).toDouble() / grid.rows * image.height)
+            .roundToInt().coerceIn(y0 + 1, image.height)
+
+        val outW = x1 - x0
+        val outH = y1 - y0
+        val out = IntArray(outW * outH)
+        for (y in 0 until outH) {
+            System.arraycopy(image.pixels, (y0 + y) * image.width + x0, out, y * outW, outW)
+        }
+        val outGrid = PixelCalibration.Grid(
+            cols = trim.width,
+            rows = trim.height,
+            cellW = outW.toDouble() / trim.width,
+            cellH = outH.toDouble() / trim.height,
+            offsetX = 0.0,
+            offsetY = 0.0,
+        )
+        return TransformedImage(out, outW, outH) to outGrid
     }
 }

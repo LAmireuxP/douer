@@ -115,9 +115,14 @@ class ChartRecognizerTest {
         val grid = ChartRecognizer.detect(chart.pixels, chart.w, chart.h)
         assertNotNull("应识别出网格", grid)
         grid!!
-        // 四周留白被 trim 掉：内容区是 22×16 格
-        assertTrue("列数 ${grid.cols} 应接近 22", abs(grid.cols - 22) <= 1)
-        assertTrue("行数 ${grid.rows} 应接近 16", abs(grid.rows - 16) <= 1)
+        // 四周留白被 trim 掉后内容区是 22×16 格；首次识别再补到
+        // 5 的整数倍，保证最右/最下的 5×5 大格完整。
+        assertEquals("首次识别列数应为 5 的倍数", 0, grid.cols % 5)
+        assertEquals("首次识别行数应为 5 的倍数", 0, grid.rows % 5)
+        assertTrue("列数 ${grid.cols} 不应裁掉内容", grid.cols >= 22)
+        assertTrue("行数 ${grid.rows} 不应裁掉内容", grid.rows >= 16)
+        assertTrue("列数 ${grid.cols} 不应补出超过 3 格", grid.cols <= 25)
+        assertTrue("行数 ${grid.rows} 不应补出超过 4 格", grid.rows <= 20)
         assertTrue("格子边长 ${grid.cellW} 应接近 20", abs(grid.cellW - 20) < 1.0)
         assertTrue("行高 ${grid.cellH} 应接近 20", abs(grid.cellH - 20) < 1.0)
         assertTrue("偏移 ${grid.offsetX} 应接近 34", abs(grid.offsetX - 34) < 5)

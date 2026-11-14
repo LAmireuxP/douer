@@ -1,6 +1,7 @@
 package com.pindou.app.core.export
 
 import android.Manifest
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -12,6 +13,7 @@ import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.MediaStore
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.pindou.app.core.pattern.PatternResult
@@ -38,13 +40,17 @@ object ExportService {
     ): Exported = runCatching {
         require(results.isNotEmpty()) { "无页数据" }
         // 每页独立渲染（含标题栏），纵向拼接成一张长图
-        val parts = results.mapIndexed { pageIndex, r ->
-            val cellPx = defaultCellPx(r)
+        val cellPx = pngCellPx(results)
+        val parts = results.map { r ->
             val titleHeight = if (symbol) 0 else titleBarHeight(cellPx)
             val rendered = if (symbol) {
                 ExportRenderer.renderSymbol(
                     r,
-                    ExportRenderer.RenderOptions(cellPx = cellPx, showCodes = false),
+                    ExportRenderer.RenderOptions(
+                        cellPx = cellPx,
+                        showCodes = false,
+                        showRuler = true,
+                    ),
                 )
             } else {
                 ExportRenderer.renderPattern(
@@ -55,39 +61,41 @@ object ExportService {
                         // 统一改由 Android Canvas 用系统字体在最终分辨率上绘制
                         showCodes = false,
                         showGrid = true,
+                        showRuler = true,
                         titleHeightPx = titleHeight,
                     ),
                 )
             }
             val bmp = rendered.toBitmap()
             if (symbol) {
-                drawSymbolLabels(bmp, r, cellPx)
+                drawSymbolLabels(bmp, r, cellPx, ExportRenderer.rulerSizePx(cellPx))
+                bmp
             } else {
-                val pageTag = if (results.size > 1) "  ·  第${pageIndex + 1}/${results.size}页" else ""
-                drawTitleBar(
-                    bmp,
-                    titleHeight,
-                    "$projectName  ·  ${r.palette.brandLabel}  ·  ${r.width}×${r.height}$pageTag",
-                    // 只统计实际出豆的格子：开背景移除后 cells.size 仍是整幅网格，
-                    // 拿它当"共 N 格"会把人吓一跳（样例图 5460 实际 3131）
-                    "共 ${r.cells.count { it >= 0 }} 格 / ${r.usage().size} 色",
+                drawCompactHeader(bmp, titleHeight, projectName, r)
+                drawCellCodes(
+                    bmp, r, cellPx, titleHeight,
+                    ExportRenderer.rulerSizePx(cellPx),
                 )
-                drawCellCodes(bmp, r, cellPx, titleHeight)
+                addLegend(bmp, r, cellPx)
             }
-            bmp
-        }
-        val totalHeight = parts.sumOf { it.height }
-        val combined = Bitmap.createBitmap(parts[0].width, totalHeight, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(combined)
-        var y = 0
-        for (part in parts) {
-            canvas.drawBitmap(part, 0f, y.toFloat(), null)
-            y += part.height
-            part.recycle()
         }
         val name = fileName(results.first(), if (symbol) "symbol" else "pattern", "png")
-        val uri = saveToDownloads(context, combined, name, "image/png")
-        combined.recycle()
+        val output = if (parts.size == 1) {
+            parts[0]
+        } else {
+            val totalHeight = parts.sumOf { it.height }
+            Bitmap.createBitmap(parts[0].width, totalHeight, Bitmap.Config.ARGB_8888).also { combined ->
+                val canvas = Canvas(combined)
+                var y = 0
+                for (part in parts) {
+                    canvas.drawBitmap(part, 0f, y.toFloat(), null)
+                    y += part.height
+                    part.recycle()
+                }
+            }
+        }
+        val uri = saveToDownloads(context, output, name, "image/png")
+        output.recycle()
         Exported.FileReady(File(name), uri)
     }.getOrElse { Exported.Failed(it.message ?: "导出失败") }
 
@@ -116,6 +124,30 @@ object ExportService {
     }.getOrElse { Exported.Failed(it.message ?: "bpat 导出失败") }
 
     /**
+     * 画像素工作区的位图导出入口：调用方已经按最终分辨率渲染好，
+     * 这里只负责落 Downloads 并返回可分享的 Uri。
+     */
+    fun savePng(
+        context: Context,
+        bitmap: Bitmap,
+        displayName: String,
+    ): Exported = runCatching {
+        val uri = saveToDownloads(context, bitmap, displayName, "image/png")
+        Exported.FileReady(File(displayName), uri)
+    }.getOrElse { Exported.Failed(it.message ?: "PNG 导出失败") }
+
+    /** GIF / 色表等非位图导出。 */
+    fun saveBytes(
+        context: Context,
+        bytes: ByteArray,
+        displayName: String,
+        mime: String,
+    ): Exported = runCatching {
+        val uri = saveBytesToDownloads(context, bytes, displayName, mime)
+        Exported.FileReady(File(displayName), uri)
+    }.getOrElse { Exported.Failed(it.message ?: "文件导出失败") }
+
+    /**
      * API 26–28 写公共下载目录需要运行时存储权限；29+ 走 MediaStore 不需要。
      * 导出前由 UI 层调用本方法决定是否先申请权限。
      */
@@ -142,13 +174,24 @@ object ExportService {
                 put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime)
                 // 直接落 Download 根目录；不再建「拼豆图纸」子文件夹
                 put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                // 写完前对其他应用不可见，避免相册/文件管理器索引到半截文件
+                put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
             }
             val resolver = context.contentResolver
             val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 ?: error("无法创建下载文件")
-            resolver.openOutputStream(uri)?.use { out ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-            } ?: error("无法写入下载文件")
+            try {
+                resolver.openOutputStream(uri)?.use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                } ?: error("无法写入下载文件")
+                val done = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+                }
+                resolver.update(uri, done, null, null)
+            } catch (t: Throwable) {
+                runCatching { resolver.delete(uri, null, null) }
+                throw t
+            }
             uri
         } else {
             val dir = legacyDownloadsDir()
@@ -171,11 +214,21 @@ object ExportService {
                 put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, displayName)
                 put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime)
                 put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
             }
             val resolver = context.contentResolver
             val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 ?: error("无法创建下载文件")
-            resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: error("无法写入下载文件")
+            try {
+                resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: error("无法写入下载文件")
+                val done = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+                }
+                resolver.update(uri, done, null, null)
+            } catch (t: Throwable) {
+                runCatching { resolver.delete(uri, null, null) }
+                throw t
+            }
             uri
         } else {
             val dir = legacyDownloadsDir()
@@ -214,82 +267,116 @@ object ExportService {
         // 打印出来的色号才不是一排小点（纸张方向随图纸长宽比自动选）。
         val portraitW = 595
         val portraitH = 842
+        // 打印机通常有 5mm 左右不可打印边；24pt ≈ 8.5mm，宁可多留一点，
+        // 也不要把坐标数字压在纸边被裁掉。
+        val margin = 24f
         val doc = PdfDocument()
-        val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+        val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
 
         var docPageIndex = 0
         for ((idx, r) in results.withIndex()) {
-            val landscape = r.width >= r.height
-            val pageW = if (landscape) portraitH else portraitW
-            val pageH = if (landscape) portraitW else portraitH
+            val cellPx = pdfCellPx(r)
+            val ruler = ExportRenderer.rulerSizePx(cellPx)
+            val layoutW = ruler * 2 + r.width * cellPx + 1
             // PDF 内嵌的是位图：按 A4 宽度缩放后 1 格只剩 2~3pt，
             // 用屏幕档 cellPx 打印出来色号必然糊。这里按打印分辨率单独放大，
-            // 保证每格文字落纸后仍有约 1mm 高（300dpi 下 ~12px）。
-            val cellPx = pdfCellPx(r)
+            // 再按整页可用宽高计算每页行数；不直接切长图，避免第二页没有坐标。
             val titleHeight = titleBarHeight(cellPx)
-            val patternBmp = ExportRenderer
-                .renderPattern(
-                    r,
-                    ExportRenderer.RenderOptions(
-                        cellPx = cellPx,
-                        showCodes = false,
-                        showGrid = true,
-                        titleHeightPx = titleHeight,
-                    ),
-                )
-                .toBitmap()
-            val pageTag = if (results.size > 1) "  ·  第${idx + 1}/${results.size}页" else ""
-            drawTitleBar(
-                patternBmp,
-                titleHeight,
-                "$projectName  ·  ${r.palette.brandLabel}  ·  ${r.width}×${r.height}$pageTag",
-                "共 ${r.cells.count { it >= 0 }} 格 / ${r.usage().size} 色",
-            )
-            drawCellCodes(patternBmp, r, cellPx, titleHeight)
+            val legendH = legendHeightPx(r.usage().size, cellPx)
+            fun plan(pageW: Int, pageH: Int): PagePlan {
+                val usableW = pageW - margin * 2f
+                val usableH = pageH - margin * 2f
+                val widthScale = usableW / layoutW
+                val rowAreaPx =
+                    usableH / widthScale - titleHeight - ruler * 2 - 1f - legendH
+                val rows = (rowAreaPx / cellPx).toInt().coerceAtLeast(1)
+                val pages = (r.height + rows - 1) / rows
+                return PagePlan(rows, pages, cellPx * widthScale)
+            }
 
-            // 按内容切分：整幅图纸若超过一页，按页高切片
-            val contentW = patternBmp.width
-            val contentH = patternBmp.height
-            val scale = (pageW - 32f) / contentW
-            val sliceH = ((pageH - 32f) / scale).toInt().coerceAtLeast(1)
-            var y = 0
-            while (y < contentH) {
-                val h = (contentH - y).coerceAtMost(sliceH)
-                val slice = Bitmap.createBitmap(patternBmp, 0, y, contentW, h)
+            val portraitPlan = plan(portraitW, portraitH)
+            val landscapePlan = plan(portraitH, portraitW)
+            val portraitOnePage = portraitPlan.pages == 1 && portraitPlan.cellPt >= 5f
+            val landscapeOnePage = landscapePlan.pages == 1 && landscapePlan.cellPt >= 5f
+            val landscape = when {
+                // 能一页放下时优先一页，和参考图的单张图纸一致；
+                // 两种方向都能一页时选格子更大的那一种。
+                portraitOnePage && landscapeOnePage ->
+                    landscapePlan.cellPt > portraitPlan.cellPt
+                portraitOnePage -> false
+                landscapeOnePage -> true
+                // 都要分页时选页数少的；页数相同选格子大的。
+                portraitPlan.pages != landscapePlan.pages ->
+                    portraitPlan.pages < landscapePlan.pages
+                else -> landscapePlan.cellPt > portraitPlan.cellPt
+            }
+            val plan = if (landscape) landscapePlan else portraitPlan
+            val pageW = if (landscape) portraitH else portraitW
+            val pageH = if (landscape) portraitW else portraitH
+            val usableW = pageW - margin * 2f
+            val usableH = pageH - margin * 2f
+            val rowsPerPage = plan.rowsPerPage
+            val sheetCount = plan.pages
+            // 最后一页只剩两三行时很难看：把总行数平均分到各页，
+            // 83×57 从 55+2 变成 29+28，页数与每格字号都不变。
+            val baseRows = r.height / sheetCount
+            val extraRows = r.height % sheetCount
+            var nextRow = 0
+
+            for (sheet in 0 until sheetCount) {
+                val rowStart = nextRow
+                val rowCount = baseRows + if (sheet < extraRows) 1 else 0
+                nextRow += rowCount
+                val slice = PatternResult(
+                    r.width,
+                    rowCount,
+                    r.cells.copyOfRange(rowStart * r.width, (rowStart + rowCount) * r.width),
+                    r.palette,
+                    r.elapsedMs,
+                )
+                val patternBmp = ExportRenderer
+                    .renderPattern(
+                        slice,
+                        ExportRenderer.RenderOptions(
+                            cellPx = cellPx,
+                            showCodes = false,
+                            showGrid = true,
+                            showRuler = true,
+                            rowOffset = rowStart,
+                            titleHeightPx = titleHeight,
+                        ),
+                    )
+                    .toBitmap()
+                drawCompactHeader(patternBmp, titleHeight, projectName, r)
+                drawCellCodes(patternBmp, slice, cellPx, titleHeight, ruler)
+                val pageBmp = if (sheet == sheetCount - 1) {
+                    addLegend(patternBmp, r, cellPx)
+                } else {
+                    patternBmp
+                }
+
+                val contentW = pageBmp.width
+                val contentH = pageBmp.height
+                // 按整页宽度定标，再防止极端比例页面高度溢出。
+                val scale = minOf(usableW / contentW, usableH / contentH)
+                val destW = contentW * scale
+                val destH = contentH * scale
+                val left = margin + (usableW - destW) / 2f
+                val top = margin
                 val page = doc.startPage(PdfDocument.PageInfo.Builder(pageW, pageH, docPageIndex + 1).create())
                 val c: Canvas = page.canvas
-                val destW = contentW * scale
-                val destH = h * scale
-                c.drawBitmap(slice, null, android.graphics.RectF(16f, 16f, 16f + destW, 16f + destH), paint)
+                c.drawBitmap(
+                    pageBmp,
+                    null,
+                    android.graphics.RectF(left, top, left + destW, top + destH),
+                    paint,
+                )
                 doc.finishPage(page)
-                slice.recycle()
-                y += h
+                if (pageBmp !== patternBmp) patternBmp.recycle()
+                pageBmp.recycle()
                 docPageIndex++
             }
-            patternBmp.recycle()
         }
-
-        // 清单页固定纵向
-        val pageW = portraitW
-        val pageH = portraitH
-        val listPage = doc.startPage(
-            PdfDocument.PageInfo.Builder(pageW, pageH, docPageIndex + 1).create(),
-        )
-        val lp = Paint().apply {
-            color = android.graphics.Color.BLACK
-            isAntiAlias = true
-        }
-        var ty = 40f
-        for (line in ShoppingList.render(results, projectName).lines()) {
-            if (ty > pageH - 24) break
-            val isTitle = line.startsWith("拼豆采购清单")
-            lp.textSize = if (isTitle) 16f else 10f
-            lp.isFakeBoldText = isTitle
-            // 制表符用两空格代替（PDF 无制表位）
-            listPage.canvas.drawText(line.replace("\t", "  "), 24f, ty, lp)
-            ty += if (isTitle) 26f else 16f
-        }
-        doc.finishPage(listPage)
 
         val pdfBytes = java.io.ByteArrayOutputStream().use { bos ->
             doc.writeTo(bos)
@@ -302,40 +389,106 @@ object ExportService {
     }.getOrElse { Exported.Failed(it.message ?: "PDF 导出失败") }
 
     /**
-     * 用系统字体在预留的标题栏里绘制标题（点阵字体没有中文字形）。
-     * 主标题 + 副标题两行，左侧对齐。
+     * 单行标题：项目名 + [宽×高/色数/总颗数]，居中。
+     * 点阵字体没有中文字形，所以这里用系统字体在预留高度里绘制。
      */
-    private fun drawTitleBar(bitmap: Bitmap, titleHeight: Int, title: String, subtitle: String) {
+    private fun drawCompactHeader(
+        bitmap: Bitmap,
+        titleHeight: Int,
+        projectName: String,
+        r: PatternResult,
+    ) {
         if (titleHeight <= 0) return
         val canvas = Canvas(bitmap)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.parseColor("#171717")
             isFakeBoldText = true
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            textAlign = Paint.Align.CENTER
         }
-        val padX = titleHeight * 0.24f
-        val titleSize = (titleHeight * 0.32f).coerceAtLeast(11f)
-        val subSize = (titleHeight * 0.21f).coerceAtLeast(9f)
+        val text = "$projectName [${r.width}×${r.height}/${r.usage().size}色/共" +
+            "${r.cells.count { it >= 0 }}颗]"
+        var size = (titleHeight * 0.55f).coerceAtLeast(16f)
+        paint.textSize = size
+        val maxWidth = bitmap.width - titleHeight * 0.5f
+        while (size > 10f && paint.measureText(text) > maxWidth) {
+            size *= 0.94f
+            paint.textSize = size
+        }
+        val baseline = titleHeight / 2f - (paint.ascent() + paint.descent()) / 2f
+        canvas.drawText(text, bitmap.width / 2f, baseline, paint)
+    }
 
-        // 两行都按字体度量定位：先落下 ascent 的绝对值，再用第一行的 descent +
-        // 6% 行距推第二行基线。不同 ROM 默认行高不一致，写死基线会顶出画面。
-        paint.textSize = titleSize
-        val titleBaseline = titleHeight * 0.13f - paint.ascent()
-        canvas.drawText(title, padX, titleBaseline, paint)
-        val titleDescent = paint.descent()
+    /** 底部用量条：6 列，色块 + 色号 + 颗数，和参考图一致。 */
+    private fun legendHeightPx(colorCount: Int, cellPx: Int): Int {
+        if (colorCount <= 0) return 0
+        val rowH = cellPx.coerceIn(32, 120)
+        val rows = (colorCount + LEGEND_COLUMNS - 1) / LEGEND_COLUMNS
+        return rows * rowH + rowH / 2
+    }
 
-        paint.isFakeBoldText = false
-        paint.color = android.graphics.Color.parseColor("#52525B")
-        paint.textSize = subSize
-        val subBaseline = titleBaseline + titleDescent + titleHeight * 0.06f - paint.ascent()
-        canvas.drawText(subtitle, padX, subBaseline, paint)
+    private fun addLegend(source: Bitmap, r: PatternResult, cellPx: Int): Bitmap {
+        val usage = r.usage()
+        if (usage.isEmpty()) return source
+        val rowH = cellPx.coerceIn(32, 120)
+        val legendH = legendHeightPx(usage.size, cellPx)
+        val out = Bitmap.createBitmap(source.width, source.height + legendH, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+        canvas.drawColor(0xFFFAFAFA.toInt())
+        canvas.drawBitmap(source, 0f, 0f, null)
 
-        // 标题栏与图纸之间的分隔线
+        val top = source.height.toFloat()
         val line = Paint().apply {
-            color = android.graphics.Color.parseColor("#33000000")
+            color = 0x22000000
             strokeWidth = 1f
         }
-        canvas.drawLine(0f, titleHeight.toFloat(), bitmap.width.toFloat(), titleHeight.toFloat(), line)
+        canvas.drawLine(0f, top, out.width.toFloat(), top, line)
+
+        val entryW = out.width.toFloat() / LEGEND_COLUMNS
+        val text = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
+            color = 0xFF333333.toInt()
+            textSize = rowH * 0.55f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        }
+        val swatch = rowH * 0.58f
+        usage.forEachIndexed { i, (idx, count) ->
+            val entry = r.palette.colors.getOrNull(idx) ?: return@forEachIndexed
+            val col = i % LEGEND_COLUMNS
+            val row = i / LEGEND_COLUMNS
+            val left = col * entryW + entryW * 0.06f
+            val cy = top + rowH * 0.25f + row * rowH + rowH * 0.5f
+            val rect = android.graphics.RectF(
+                left,
+                cy - swatch / 2f,
+                left + swatch,
+                cy + swatch / 2f,
+            )
+            canvas.drawRoundRect(
+                rect,
+                3f,
+                3f,
+                Paint(Paint.ANTI_ALIAS_FLAG).apply { color = entry.argb },
+            )
+            canvas.drawRoundRect(
+                rect,
+                3f,
+                3f,
+                Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = 0x33000000
+                    style = Paint.Style.STROKE
+                    strokeWidth = 1f
+                },
+            )
+            val baseline = cy - (text.ascent() + text.descent()) / 2f
+            canvas.drawText(
+                "${entry.code} $count",
+                left + swatch + rowH * 0.2f,
+                baseline,
+                text,
+            )
+        }
+        source.recycle()
+        return out
     }
 
     /**
@@ -343,7 +496,13 @@ object ExportService {
      * 字号按格子高度 46% 取，宽度超格再等比缩；底色深浅自动切黑/白字。
      * 复杂度 O(格数)，78×70 约 5500 次 drawText，几十毫秒。
      */
-    private fun drawCellCodes(bitmap: Bitmap, r: PatternResult, cell: Int, titleHeight: Int) {
+    private fun drawCellCodes(
+        bitmap: Bitmap,
+        r: PatternResult,
+        cell: Int,
+        titleHeight: Int,
+        ruler: Int,
+    ) {
         if (cell < 16) return
         val canvas = Canvas(bitmap)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
@@ -365,8 +524,8 @@ object ExportService {
                     paint.textSize = baseSize * maxWidth / measured
                 }
                 paint.color = codeTextColor(color.argb)
-                val cx = gx * cell + cell / 2f
-                val cy = titleHeight + gy * cell + cell / 2f
+                val cx = ruler + gx * cell + cell / 2f
+                val cy = titleHeight + ruler + gy * cell + cell / 2f
                 // 基线按字体度量居中，避免不同字号的数字上下偏移
                 val baseline = cy - (paint.ascent() + paint.descent()) / 2f
                 canvas.drawText(color.code, cx, baseline, paint)
@@ -379,23 +538,19 @@ object ExportService {
      * 符号分配规则必须与 ExportRenderer.renderSymbol 完全一致：
      * usage() 按用量降序，第 i 个颜色拿 SYMBOLS[i % size]。
      */
-    private fun drawSymbolLabels(bitmap: Bitmap, r: PatternResult, cell: Int) {
+    private fun drawSymbolLabels(bitmap: Bitmap, r: PatternResult, cell: Int, ruler: Int) {
         val canvas = Canvas(bitmap)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         }
-        val usedIndices = r.usage().map { it.first }
-        val symbolOf = HashMap<Int, Char>(usedIndices.size)
-        usedIndices.forEachIndexed { i, colorIdx ->
-            symbolOf[colorIdx] = ExportRenderer.SYMBOLS[i % ExportRenderer.SYMBOLS.size]
-        }
+        val symbolOf = ExportRenderer.symbolAssignments(r)
 
         // 标题
         paint.textAlign = Paint.Align.LEFT
         paint.color = 0xFF333333.toInt()
         paint.textSize = (cell * 0.55f).coerceAtLeast(14f)
         paint.isFakeBoldText = true
-        canvas.drawText("SYMBOL CHART", cell * 0.25f, cell * 0.68f, paint)
+        canvas.drawText("SYMBOL CHART", ruler + cell * 0.25f, cell * 0.68f, paint)
         paint.isFakeBoldText = false
 
         // 每格：符号居中偏上，色号贴底
@@ -407,8 +562,8 @@ object ExportService {
                 val idx = r.cells[gy * r.width + gx]
                 if (idx < 0) continue
                 val sym = symbolOf[idx] ?: continue
-                val cx = gx * cell + cell / 2f
-                val top = titleH + gy * cell
+                val cx = ruler + gx * cell + cell / 2f
+                val top = titleH + ruler + gy * cell
                 paint.textAlign = Paint.Align.CENTER
                 paint.color = 0xFF333333.toInt()
                 paint.textSize = symSize
@@ -427,15 +582,15 @@ object ExportService {
         }
 
         // 对照表：4 列，行高 cell/2，与 renderSymbol 布局一致
-        val legendTop = r.height * cell + titleH + cell / 2
-        val colW = bitmap.width / 4
+        val legendTop = titleH + ruler * 2 + r.height * cell + cell / 2
+        val colW = r.width * cell / 4
         paint.textAlign = Paint.Align.LEFT
         paint.textSize = (cell * 0.32f).coerceAtLeast(10f)
         paint.color = 0xFF333333.toInt()
-        usedIndices.forEachIndexed { i, colorIdx ->
+        symbolOf.keys.forEachIndexed { i, colorIdx ->
             val col = i % 4
             val row = i / 4
-            val x = col * colW + cell / 3 + 8f
+            val x = ruler + col * colW + cell / 3 + 8f
             val y = legendTop + row * (cell / 2)
             canvas.drawText(
                 "${symbolOf[colorIdx]} ${r.palette.colors[colorIdx].code}",
@@ -469,30 +624,94 @@ object ExportService {
             "bpat" -> "application/octet-stream"
             else -> "image/png"
         }
+        val shareUri = shareUriFor(context, exported)
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = mime
-            putExtra(Intent.EXTRA_STREAM, exported.uri)
+            putExtra(Intent.EXTRA_STREAM, shareUri)
+            // 部分阅读器只认 FileProvider，不认 MediaStore 的 content://media/...
+            // ClipData 同时保证接收方拿到读权限。
+            clipData = ClipData.newUri(context.contentResolver, exported.file.name, shareUri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         context.startActivity(Intent.createChooser(intent, "分享图纸"))
     }
 
-    private fun defaultCellPx(result: PatternResult): Int = when {
-        result.width <= 32 -> 88
-        result.width <= 64 -> 60
-        result.width <= 100 -> 48
-        else -> 32
+    /**
+     * MediaStore 的 Downloads URI 在夸克/QQ 等第三方阅读器里会报“无效的文件路径”。
+     * 分享前复制一份到 cache，用 FileProvider URI 发出去；下载目录里的原文件保留。
+     */
+    private fun shareUriFor(context: Context, exported: Exported.FileReady): Uri {
+        if (exported.uri.authority != MediaStore.AUTHORITY) return exported.uri
+        val dir = File(context.cacheDir, "share").apply { mkdirs() }
+        // 分享缓存只保留本次副本，避免每次分享都留下一个几十 MB 的旧文件
+        runCatching { dir.listFiles()?.forEach { it.delete() } }
+        val local = File(dir, exported.file.name)
+        return runCatching {
+            context.contentResolver.openInputStream(exported.uri)?.use { input ->
+                FileOutputStream(local).use { output -> input.copyTo(output) }
+            } ?: error("无法读取导出文件")
+            uriFor(context, local)
+        }.getOrElse { exported.uri }
+    }
+
+    /**
+     * PNG 导出分辨率：先按图纸宽度给高倍率，再用总像素预算收敛。
+     * 32M 像素/整张 ≈ 128MB/份；单页直接压缩，多页才额外拼一张，
+     * 配合 largeHeap 留出足够余量，同时保证常见图纸比旧版清晰 1.5~2 倍。
+     */
+    private fun pngCellPx(results: List<PatternResult>): Int {
+        val maxWidth = results.maxOf { it.width }
+        var cell = when {
+            maxWidth <= 32 -> 176
+            maxWidth <= 64 -> 120
+            maxWidth <= 100 -> 96
+            else -> 64
+        }
+        while (cell > 8 && results.sumOf { estimatePngArea(it, cell) } > MAX_PNG_PIXELS) {
+            cell -= 4
+        }
+        return cell
+    }
+
+    private fun estimatePngArea(r: PatternResult, cell: Int): Long {
+        val ruler = ExportRenderer.rulerSizePx(cell)
+        val w = ruler * 2L + r.width.toLong() * cell + 1
+        val h = titleBarHeight(cell) + ruler * 2L + r.height.toLong() * cell + 1 +
+            legendHeightPx(r.usage().size, cell)
+        return w * h
     }
 
     /** PDF 专用：比屏幕档再大一截，抵消 A4 缩放 */
-    private fun pdfCellPx(result: PatternResult): Int = when {
-        result.width <= 32 -> 120
-        result.width <= 64 -> 84
-        result.width <= 100 -> 64
-        else -> 44
+    private fun pdfCellPx(result: PatternResult): Int {
+        val base = when {
+            result.width <= 32 -> 120
+            result.width <= 64 -> 84
+            result.width <= 100 -> 64
+            else -> 44
+        }
+        // 整页位图峰值 ≈ 2 × w × h × 4B（渲染缓冲 + Bitmap）。
+        // 133×189 在 44px 下约 200MB，低内存机必 OOM；按面积预算逐级降格，
+        // 大图宁可字号小一点，也不要把导出做成闪退。
+        var cell = base
+        while (cell > 8) {
+            val ruler = ExportRenderer.rulerSizePx(cell)
+            val w = ruler * 2L + result.width.toLong() * cell + 1
+            val h = ruler * 2L + result.height.toLong() * cell + 1 + titleBarHeight(cell)
+            if (w * h <= MAX_PDF_BITMAP_PIXELS) break
+            cell -= 4
+        }
+        return cell
     }
 
-    private fun titleBarHeight(cell: Int): Int = (cell * 1.8f).toInt()
+    private fun titleBarHeight(cell: Int): Int = (cell * 1.3f).toInt().coerceAtLeast(32)
+
+    private data class PagePlan(val rowsPerPage: Int, val pages: Int, val cellPt: Float)
+
+    private const val LEGEND_COLUMNS = 6
+    /** PNG 总像素上限；largeHeap 下 32M 像素 ≈ 128MB/份，单页峰值约 256MB。 */
+    private const val MAX_PNG_PIXELS = 32_000_000L
+    /** PDF 单张位图上限：25M 像素 ≈ 100MB/张，渲染 + Bitmap 两份约 200MB。 */
+    private const val MAX_PDF_BITMAP_PIXELS = 25_000_000L
 
     /**
      * 色号字色：按 WCAG 相对亮度取黑/白里对比度更高的一方。

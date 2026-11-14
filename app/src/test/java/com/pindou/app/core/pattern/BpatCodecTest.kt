@@ -96,6 +96,30 @@ class BpatCodecTest {
     }
 
     @Test
+    fun `超大色表与超长标题会被拒绝`() {
+        val manyColors = List(256) { i ->
+            BpatCodec.BpatColorSource("C$i", "#%06X".format(i), null)
+        }
+        val manyJson = BpatCodec.encode(
+            "", "", "MARD", "MM5", 1, 1, listOf(intArrayOf(0)), manyColors,
+        )
+        try {
+            BpatCodec.decode(manyJson)
+            throw AssertionError("256 色应被拒绝")
+        } catch (_: IllegalArgumentException) {
+        }
+
+        val longTitleJson = BpatCodec.encode(
+            "x".repeat(101), "", "MARD", "MM5", 1, 1, listOf(intArrayOf(0)), colors,
+        )
+        try {
+            BpatCodec.decode(longTitleJson)
+            throw AssertionError("101 字符标题应被拒绝")
+        } catch (_: IllegalArgumentException) {
+        }
+    }
+
+    @Test
     fun `hex 解析非法返回 null`() {
         assertNull(PaletteJson.parseHex("#ZZZZZZ"))
         assertEquals(0xFF112233.toInt(), PaletteJson.parseHex("#112233"))

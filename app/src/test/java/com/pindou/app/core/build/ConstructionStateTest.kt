@@ -77,4 +77,27 @@ class ConstructionStateTest {
             // 预期路径
         }
     }
+
+    @Test
+    fun `多页施工进度按页独立统计`() {
+        val s = ConstructionState(2, 2, BooleanArray(2 * 2 * 2), pages = 2)
+        assertEquals(2, s.pageCount)
+        assertEquals(4, s.total)
+
+        s.toggle(0)
+        assertEquals(1, s.doneCount)
+        assertTrue(s.isDone(0))
+
+        assertTrue(s.setPage(1))
+        assertEquals(0, s.doneCount)
+        assertFalse(s.isDone(0))
+        s.toggle(1)
+        assertEquals(1, s.doneCount)
+        assertEquals(1f / 4f, s.progress, 1e-6f)
+
+        assertTrue(s.setPage(0))
+        assertEquals(1, s.doneCount)
+        assertTrue(s.isDone(0))
+        assertFalse(s.isDone(1))
+    }
 }

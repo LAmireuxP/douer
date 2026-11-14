@@ -219,11 +219,13 @@ object BackgroundRemover {
         w: Int,
         h: Int,
         tolerance: Double = 12.0,
+        subjectMask: SubjectMask? = null,
     ): IntArray {
         val mask = detect(grid, w, h, tolerance)
         if (mask.none { it }) return cells.copyOf()
         val out = cells.copyOf()
         for (i in 0 until min(out.size, mask.size)) if (mask[i]) out[i] = -1
+        protectWithSubjectMask(out, cells, w, h, subjectMask, w, h)
         return out
     }
 
@@ -249,13 +251,66 @@ object BackgroundRemover {
         tolerance: Double = 12.0,
         scale: Int = 3,
         grid: IntArray? = null,
+        subjectMask: SubjectMask? = null,
     ): IntArray {
-        if (scale <= 1) return applyToCells(cells, grid ?: return cells.copyOf(), w, h, tolerance)
+        if (scale <= 1) {
+            return applyToCells(
+                cells, grid ?: return cells.copyOf(), w, h, tolerance, subjectMask,
+            )
+        }
         val mask = detectFromPixels(pixels, srcW, srcH, w, h, tolerance) ?: return cells.copyOf()
         if (mask.none { it }) return cells.copyOf()
         val out = cells.copyOf()
         for (i in 0 until min(out.size, mask.size)) if (mask[i]) out[i] = -1
+        protectWithSubjectMask(out, cells, w, h, subjectMask, srcW, srcH)
         return out
+    }
+
+    /**
+     * AI 掩码保护：目标格覆盖到的源像素里只要有一个主体点，就撤销该格的清空。
+     *
+     * 只在掩码与源图同尺寸时生效；尺寸不匹配（老缓存、换图后未重算）直接忽略，
+     * 绝不按错误比例硬套。
+     */
+    private fun protectWithSubjectMask(
+        out: IntArray,
+        original: IntArray,
+        w: Int,
+        h: Int,
+        mask: SubjectMask?,
+        srcW: Int,
+        srcH: Int,
+    ) {
+        if (mask == null || w <= 0 || h <= 0) return
+        val direct = mask.width == w && mask.height == h
+        val sourceAligned = mask.width == srcW && mask.height == srcH
+        if (!direct && !sourceAligned) return
+        for (y in 0 until h) {
+            val row = y * w
+            for (x in 0 until w) {
+                if (out[row + x] >= 0) continue
+                val subject = if (direct) {
+                    mask.isSubject(x, y)
+                } else {
+                    val x0 = (x.toLong() * srcW / w).toInt()
+                    val x1 = ((x + 1L) * srcW / w).toInt().coerceAtLeast(x0 + 1)
+                    val y0 = (y.toLong() * srcH / h).toInt()
+                    val y1 = ((y + 1L) * srcH / h).toInt().coerceAtLeast(y0 + 1)
+                    var hit = false
+                    for (sy in y0 until y1.coerceAtMost(srcH)) {
+                        for (sx in x0 until x1.coerceAtMost(srcW)) {
+                            if (mask.isSubject(sx, sy)) {
+                                hit = true
+                                break
+                            }
+                        }
+                        if (hit) break
+                    }
+                    hit
+                }
+                if (subject) out[row + x] = original[row + x]
+            }
+        }
     }
 
         /**

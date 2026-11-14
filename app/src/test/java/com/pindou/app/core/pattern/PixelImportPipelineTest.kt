@@ -52,7 +52,13 @@ class PixelImportPipelineTest {
             pixels, 64, 64, smart = false, threshold = 0.02f, detect = detect,
         )
         assertFalse(manual.applied)
-        assertEquals(guessed.grid, manual.grid)
+        // 首次识别补到 5×5 的整数倍，格子和原点不跟着变
+        assertEquals(10, manual.grid.cols)
+        assertEquals(10, manual.grid.rows)
+        assertEquals(guessed.grid.cellW, manual.grid.cellW, 0.0001)
+        assertEquals(guessed.grid.cellH, manual.grid.cellH, 0.0001)
+        assertEquals(guessed.grid.offsetX, manual.grid.offsetX, 0.0001)
+        assertEquals(guessed.grid.offsetY, manual.grid.offsetY, 0.0001)
     }
 
     /**
@@ -159,6 +165,50 @@ class PixelImportPipelineTest {
         // 抖动没有生效：红块内部仍是纯红
         val redIndex = palette.colors.indexOfFirst { it.code == "R" }
         assertEquals(redIndex, cells[2 * cols + 2])
+    }
+
+    /**
+     * 网格为了补 5×5 会落到图片外：左侧两列、上方一行、下方一行是空格，
+     * 右侧刚好贴边。确认落库的 finalResult 必须把这些空白边收掉，图纸
+     * 从 6×6 收到 4×4；校准预览仍保留完整 6×6 网格。
+     */
+    @Test
+    fun `确认时收掉图外空白格`() {
+        val block = 8
+        val srcW = 32
+        val srcH = 32
+        val red = 0xFFFF0000.toInt()
+        val pixels = IntArray(srcW * srcH) { red }
+        val grid = PixelCalibration.Grid(
+            cols = 6,
+            rows = 6,
+            cellW = block.toDouble(),
+            cellH = block.toDouble(),
+            offsetX = -16.0,
+            offsetY = -8.0,
+        )
+
+        val conversion = PixelImportPipeline.convert(
+            pixels, srcW, srcH, grid, palette,
+            GeneratorOptions(gridW = 6, gridH = 6, autoExposure = false),
+        )
+
+        // 校准页：完整网格 + 空格仍在
+        assertEquals(6, conversion.result.width)
+        assertEquals(6, conversion.result.height)
+        assertEquals(36, conversion.previewArgb.size)
+        assertTrue(conversion.result.cells.any { it < 0 })
+
+        // 确认落库：左侧 2 列、上/下各 1 行的空格已收掉
+        val final = conversion.finalResult
+        assertEquals(4, final.width)
+        assertEquals(4, final.height)
+        assertEquals(16, final.cells.size)
+        assertFalse(final.cells.any { it < 0 })
+        assertEquals(4, conversion.finalGrid.cols)
+        assertEquals(4, conversion.finalGrid.rows)
+        assertEquals(32, conversion.finalCropped.width)
+        assertEquals(32, conversion.finalCropped.height)
     }
 
     /** 64×64，7×7 个 8px 色块，第一格从 (4,4) 开始 */

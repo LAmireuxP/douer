@@ -3,6 +3,7 @@ package com.pindou.app.core.data
 import android.content.Context
 import android.graphics.Bitmap
 import androidx.room.Room
+import androidx.room.withTransaction
 import com.pindou.app.core.export.ExportRenderer
 import com.pindou.app.core.palette.BeadPalette
 import com.pindou.app.core.pattern.PatternResult
@@ -17,7 +18,11 @@ class ProjectRepository(private val context: Context) {
 
     private val db: PindouDatabase by lazy {
         Room.databaseBuilder(context, PindouDatabase::class.java, "pindou.db")
-            .addMigrations(PindouDatabase.MIGRATION_1_2, PindouDatabase.MIGRATION_2_3)
+            .addMigrations(
+                PindouDatabase.MIGRATION_1_2,
+                PindouDatabase.MIGRATION_2_3,
+                PindouDatabase.MIGRATION_3_4,
+            )
             .build()
     }
 
@@ -56,7 +61,7 @@ class ProjectRepository(private val context: Context) {
         )
     }
 
-    /** 编辑器完成：只更新格数据与锁，保留施工进度（尺寸色卡不变） */
+    /** 编辑器完成：格数据、锁、页数和尺寸一起更新；尺寸没变时保留施工进度。 */
     suspend fun updateCells(
         id: Long,
         width: Int,
@@ -73,7 +78,11 @@ class ProjectRepository(private val context: Context) {
         } else cells
         val thumb = renderThumbnail(PatternResult(width, height, page0, palette, 0))
         val old = dao.getById(id)?.thumbnailPath
-        dao.updateCells(id, GridCodec.encodeCells(cells), GridCodec.encodeLocks(locked), pages, thumb, now)
+        dao.updateCells(
+            id, width, height,
+            GridCodec.encodeCells(cells), GridCodec.encodeLocks(locked),
+            pages, thumb, now,
+        )
         // 旧缩略图清理（新图已生成时）
         if (thumb != null && old != null && old != thumb) {
             runCatching { File(old).delete() }
@@ -129,19 +138,63 @@ class ProjectRepository(private val context: Context) {
         dao.setAlbum(id, album.trim(), System.currentTimeMillis())
     }
 
+    suspend fun setFavAll(ids: List<Long>, fav: Boolean) = withContext(Dispatchers.IO) {
+        if (ids.isEmpty()) return@withContext
+        val now = System.currentTimeMillis()
+        // SQLite 单条语句最多 999 个绑定变量；按 500 分块，选中几千份也不会崩
+        ids.chunked(500).forEach { dao.setFavAll(it, fav, now) }
+    }
+
+    suspend fun setAlbumAll(ids: List<Long>, album: String) = withContext(Dispatchers.IO) {
+        if (ids.isEmpty()) return@withContext
+        val now = System.currentTimeMillis()
+        ids.chunked(500).forEach { dao.setAlbumAll(it, album.trim(), now) }
+    }
+
     /** 保存参考原图路径 */
     suspend fun setRefPath(id: Long, path: String?) = withContext(Dispatchers.IO) {
         dao.setRefPath(id, path, System.currentTimeMillis())
+    }
+
+    /** 画像素分层工程 sidecar；null 表示该项目退回普通图纸编辑器。 */
+    suspend fun setStudioPath(id: Long, path: String?) = withContext(Dispatchers.IO) {
+        dao.setStudioPath(id, path, System.currentTimeMillis())
+    }
+
+    /** 修复旧项目缺失的宽高（格子本身未变）。 */
+    suspend fun repairSize(id: Long, width: Int, height: Int) = withContext(Dispatchers.IO) {
+        dao.updateSize(id, width, height, System.currentTimeMillis())
     }
 
     suspend fun rename(id: Long, name: String) = withContext(Dispatchers.IO) {
         dao.rename(id, name, System.currentTimeMillis())
     }
 
-    suspend fun delete(id: Long) = withContext(Dispatchers.IO) {
-        val project = dao.getById(id)
-        project?.thumbnailPath?.let { runCatching { File(it).delete() } }
-        dao.delete(id)
+    suspend fun delete(id: Long) = deleteAll(listOf(id))
+
+    /** 清掉参考原图并断开数据库引用；旧文件不存在时也照常把引用置空。 */
+    suspend fun clearRefPath(id: Long) = withContext(Dispatchers.IO) {
+        val old = dao.getById(id)?.refPath
+        dao.setRefPath(id, null, System.currentTimeMillis())
+        old?.let { runCatching { File(it).delete() } }
+    }
+
+    /**
+     * 批量删除。数据库行放在一个事务里，文件路径先收集、事务提交后再删；
+     * 文件删除失败不影响数据库行删除，避免一条坏路径卡住整批。
+     */
+    suspend fun deleteAll(ids: Collection<Long>) = withContext(Dispatchers.IO) {
+        val files = mutableListOf<File>()
+        db.withTransaction {
+            ids.forEach { id ->
+                val project = dao.getById(id)
+                project?.thumbnailPath?.let { files += File(it) }
+                project?.studioPath?.let { files += File(it) }
+                project?.refPath?.let { files += File(it) }
+                dao.delete(id)
+            }
+        }
+        files.forEach { runCatching { it.delete() } }
     }
 
     /**
@@ -164,8 +217,7 @@ class ProjectRepository(private val context: Context) {
         val flatLocks = pagesLocks.reduce { acc, cur -> acc + cur }
         val thumb = thumbnailCopyFrom?.let { src ->
             runCatching {
-                val dir = File(context.filesDir, "thumbs").apply { mkdirs() }
-                val dst = File(dir, "thumb_${System.currentTimeMillis()}.png")
+                val dst = newThumbFile()
                 File(src).copyTo(dst, overwrite = true)
                 dst.absolutePath
             }.getOrNull()
@@ -202,12 +254,17 @@ class ProjectRepository(private val context: Context) {
         val bmp = Bitmap.createBitmap(rendered.width, rendered.height, Bitmap.Config.ARGB_8888)
         bmp.setPixels(rendered.pixels, 0, rendered.width, 0, 0, rendered.width, rendered.height)
 
-        val dir = File(context.filesDir, "thumbs").apply { mkdirs() }
-        val file = File(dir, "thumb_${System.currentTimeMillis()}.png")
+        val file = newThumbFile()
         FileOutputStream(file).use { out ->
             bmp.compress(Bitmap.CompressFormat.PNG, 90, out)
         }
         bmp.recycle()
         file.absolutePath
     }.getOrNull()
+
+    /** 同一毫秒保存两次也不能撞名；时间戳后补单调纳秒。 */
+    private fun newThumbFile(): File {
+        val dir = File(context.filesDir, "thumbs").apply { mkdirs() }
+        return File(dir, "thumb_${System.currentTimeMillis()}_${System.nanoTime()}.png")
+    }
 }

@@ -30,6 +30,8 @@ data class GeneratorOptions(
     val pixelGrid: Pair<Int, Int>? = null,
     /** 自动贴着主体取景：四周空白多时先裁掉再采样（照片/插画默认开） */
     val autoFrame: Boolean = true,
+    /** AI 主体掩码（可选）：只用于取景包围盒与去背景保护，失败时传 null */
+    val subjectMask: SubjectMask? = null,
 )
 
 /** 生成结果：cells 为色卡索引（-1 = 空格），与 palette 配套使用 */
@@ -95,13 +97,24 @@ object PatternGenerator {
         //     先按主体包围盒裁、再按网格比例补边，同样 60×60 能画两倍细节。
         //     像素画不裁：裁完画像素网格会错位，逐像素还原的前提就没了。
         val frame = if (options.autoFrame && !options.exactArt) {
-            AutoFrame.apply(exposurePixels, srcW, srcH, options.gridW, options.gridH)
+            val mask = options.subjectMask
+            if (mask != null && mask.width == srcW && mask.height == srcH) {
+                AutoFrame.applyWithMask(
+                    exposurePixels, srcW, srcH, options.gridW, options.gridH, mask,
+                )
+            } else {
+                AutoFrame.apply(exposurePixels, srcW, srcH, options.gridW, options.gridH)
+            }
         } else {
             null
         }
         val srcPixels = frame?.pixels ?: exposurePixels
         val srcWidth = frame?.w ?: srcW
         val srcHeight = frame?.h ?: srcH
+        // 取景会改变源图坐标：有裁剪结果时用同步裁过的掩码，否则仍用原图掩码。
+        val subjectMask = frame?.subjectMask ?: options.subjectMask?.takeIf {
+            it.width == srcWidth && it.height == srcHeight
+        }
 
         // ① 采样：面积平均 + 分级平滑，直接得到目标网格的颜色。
         //    过滤等级越高，2× 中间图上的盒式平滑越强，纹理高频先被吃掉。
@@ -185,6 +198,7 @@ object PatternGenerator {
                 h = options.gridH,
                 tolerance = options.backgroundTolerance,
                 grid = sample.argb,
+                subjectMask = subjectMask,
             )
             onStage(GenerationStage.BACKGROUND, 1f)
             removed
@@ -274,13 +288,22 @@ object PatternGenerator {
             pixelArt = art != null,
         )
 
+        // ⑧ 收边：去掉四周没有色号的空格，让内容紧贴上下左右。
+        //    校准过的像素网格由 PixelImportPipeline 在落库前收边：
+        //    那里还要按原图交集把图外格子置空，顺序不能反。
+        val trim = if (options.pixelGrid == null) {
+            PatternTrim.trimEmptyEdges(cleaned, options.gridW, options.gridH)
+        } else {
+            PatternTrim.Result(cleaned, options.gridW, options.gridH, false)
+        }
+
         val result = PatternResult(
-            options.gridW, options.gridH, cleaned, palette,
+            trim.width, trim.height, trim.cells, palette,
             (System.nanoTime() - startNanos) / 1_000_000,
             quality = quality,
             filterLevel = options.filterLevel,
             pixelArt = art != null,
-            framed = frame?.trimmed == true,
+            framed = frame?.trimmed == true || trim.trimmed,
         )
         onStage(GenerationStage.DONE, 1f)
         return result

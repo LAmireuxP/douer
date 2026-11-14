@@ -22,6 +22,10 @@ object ExportRenderer {
         val cellPx: Int = 64,
         val showCodes: Boolean = true,
         val showGrid: Boolean = true,
+        /** 四周行列坐标带。导出时开启，屏幕预览由 Compose 的 GridRuler 绘制。 */
+        val showRuler: Boolean = false,
+        /** 分页导出时的全局行偏移：坐标从 rowOffset + 1 开始，而不是每页重新从 1 数。 */
+        val rowOffset: Int = 0,
         /**
          * 标题栏高度（像素）。内嵌点阵字体只有 ASCII 字形，中文标题会缺字，
          * 因此这里只**预留空间**，真正的标题文字由 Android 层用系统字体绘制
@@ -34,6 +38,11 @@ object ExportRenderer {
     private const val GRID_LINE = 0x33000000          // 半透明黑
     private const val TEXT_DARK = 0xFF333333.toInt()
     private const val TEXT_LIGHT = 0xFFF5F5F5.toInt()
+    private const val RULER_BG = 0xFFF1F1EB.toInt()
+    private const val RULER_LINE = 0xFF2A2A2A.toInt()
+
+    /** 坐标带宽度：随格子放大，但不小于 14px，避免数字挤成一团。 */
+    fun rulerSizePx(cellPx: Int): Int = (cellPx * 0.5f).toInt().coerceIn(14, 40)
 
     /**
      * 渲染彩色图纸。每格 cellPx 像素，格内居中绘制色号（若开启且格子够大）。
@@ -42,19 +51,25 @@ object ExportRenderer {
     fun renderPattern(result: PatternResult, options: RenderOptions): RenderedBitmap {
         val cell = options.cellPx.coerceIn(8, 256)
         val titleH = options.titleHeightPx.coerceAtLeast(0)
-        val w = result.width * cell + 1
-        val h = result.height * cell + 1 + titleH
+        val ruler = if (options.showRuler) rulerSizePx(cell) else 0
+        val ox = ruler
+        val oy = titleH + ruler
+        val w = ruler * 2 + result.width * cell + 1
+        val h = ruler * 2 + result.height * cell + 1 + titleH
         val pixels = IntArray(w * h) { BG }
+        val labels = com.pindou.app.core.pattern.ColorLabelLayout.labelMask(
+            result.cells, result.width, result.height,
+        )
 
         for (gy in 0 until result.height) {
             for (gx in 0 until result.width) {
                 val idx = result.cells[gy * result.width + gx]
                 if (idx < 0) continue
                 val argb = result.palette.colors[idx].argb
-                val x0 = gx * cell
-                val y0 = gy * cell + titleH
+                val x0 = ox + gx * cell
+                val y0 = oy + gy * cell
                 fillRect(pixels, w, h, x0, y0, cell, cell, argb)
-                if (options.showCodes && cell >= 20) {
+                if (options.showCodes && cell >= 20 && labels[gy * result.width + gx]) {
                     val code = result.palette.colors[idx].code
                     val textColor = if (isLight(argb)) TEXT_DARK else TEXT_LIGHT
                     // 点阵字高 7px，缩放到不超过格子高度 28%，避免遮住颜色
@@ -75,13 +90,19 @@ object ExportRenderer {
 
         if (options.showGrid) {
             for (gx in 0..result.width) {
-                val x = (gx * cell).coerceAtMost(w - 1)
-                drawVLine(pixels, w, h, x, titleH, GRID_LINE)
+                val x = (ox + gx * cell).coerceAtMost(w - 1)
+                drawVLine(pixels, w, h, x, oy, GRID_LINE)
             }
             for (gy in 0..result.height) {
-                val y = (gy * cell + titleH).coerceAtMost(h - 1)
+                val y = (oy + gy * cell).coerceAtMost(h - 1)
                 drawHLine(pixels, w, h, y, GRID_LINE)
             }
+        }
+        if (ruler > 0) {
+            drawRuler(
+                pixels, w, h, ox, oy, cell, result.width, result.height,
+                ruler, titleH, options.rowOffset,
+            )
         }
         return RenderedBitmap(w, h, pixels)
     }
@@ -92,35 +113,38 @@ object ExportRenderer {
      */
     fun renderSymbol(result: PatternResult, options: RenderOptions): RenderedBitmap {
         val cell = options.cellPx.coerceIn(16, 256)
+        val ruler = if (options.showRuler) rulerSizePx(cell) else 0
+        val ox = ruler
+        val oy = cell + ruler
         // usage() 按用量降序，符号分配因此是确定性的：用得多的颜色拿前面的符号
         val usedIndices = result.usage().map { it.first }
-        val symbolOf = HashMap<Int, Char>()
-        usedIndices.forEachIndexed { i, colorIdx ->
-            symbolOf[colorIdx] = SYMBOLS[i % SYMBOLS.size]
-        }
+        val symbolOf = symbolAssignments(result)
 
         val legendRows = usedIndices.size
         val titleH = cell
         val legendH = ((legendRows + 3) / 4) * (cell / 2) + cell
-        val w = result.width * cell + 1
-        val h = result.height * cell + 1 + titleH + legendH
+        val w = ruler * 2 + result.width * cell + 1
+        val h = ruler * 2 + result.height * cell + 1 + titleH + legendH
         val pixels = IntArray(w * h) { 0xFFFFFFFF.toInt() }
+        val labels = com.pindou.app.core.pattern.ColorLabelLayout.labelMask(
+            result.cells, result.width, result.height,
+        )
 
         // 文字（标题/色号/对照表）可由 Android 层用系统字体覆盖绘制，
         // 纯 JVM 测试与旧调用方仍走内嵌点阵
         if (options.showCodes) {
-            drawTextLine(pixels, w, h, "SYMBOL CHART", 8, titleH / 2 - 8, TEXT_DARK, 2)
+            drawTextLine(pixels, w, h, "SYMBOL CHART", ox + 8, titleH / 2 - 8, TEXT_DARK, 2)
         }
 
         for (gy in 0 until result.height) {
             for (gx in 0 until result.width) {
                 val idx = result.cells[gy * result.width + gx]
                 if (idx < 0) continue
-                val x0 = gx * cell
-                val y0 = gy * cell + titleH
+                val x0 = ox + gx * cell
+                val y0 = oy + gy * cell
                 // 符号版底色用浅灰，靠色号文字区分（黑白打印机友好）
                 fillRect(pixels, w, h, x0 + 2, y0 + 2, cell - 4, cell - 4, 0xFFF2F2F2.toInt())
-                if (options.showCodes && cell >= 24) {
+                if (options.showCodes && cell >= 24 && labels[gy * result.width + gx]) {
                     val code = result.palette.colors[idx].code
                     drawTextLine(
                         pixels, w, h, "${symbolOf[idx]} $code",
@@ -132,21 +156,21 @@ object ExportRenderer {
 
         // 网格
         for (gx in 0..result.width) {
-            val x = (gx * cell).coerceAtMost(w - 1)
-            drawVLine(pixels, w, h, x, titleH, GRID_LINE)
+            val x = (ox + gx * cell).coerceAtMost(w - 1)
+            drawVLine(pixels, w, h, x, oy, GRID_LINE)
         }
         for (gy in 0..result.height) {
-            val y = (gy * cell + titleH).coerceAtMost(h - 1)
+            val y = (oy + gy * cell).coerceAtMost(h - 1)
             drawHLine(pixels, w, h, y, GRID_LINE)
         }
 
         // 对照表：4 列 × N 行
-        val legendTop = result.height * cell + titleH + cell / 2
-        val colW = w / 4
+        val legendTop = oy + result.height * cell + ruler + cell / 2
+        val colW = (w - ox) / 4
         usedIndices.forEachIndexed { i, colorIdx ->
             val col = i % 4
             val row = i / 4
-            val x = col * colW
+            val x = ox + col * colW
             val y = legendTop + row * (cell / 2)
             val entry = result.palette.colors[colorIdx]
             drawRectOutline(pixels, w, h, x + 4, y + 2, cell / 3, cell / 3, entry.argb)
@@ -156,7 +180,113 @@ object ExportRenderer {
             }
         }
 
+        if (ruler > 0) {
+            drawRuler(
+                pixels, w, h, ox, oy, cell, result.width, result.height,
+                ruler, titleH, options.rowOffset,
+            )
+        }
         return RenderedBitmap(w, h, pixels)
+    }
+
+    /**
+     * 符号分配的唯一入口：用量降序后循环取 SYMBOLS。
+     *
+     * 纯像素版 renderSymbol 与 Canvas 叠加版 drawSymbolLabels 必须共用它，
+     * 否则扩符号表/改排序时两条路径会悄悄错位。
+     */
+    fun symbolAssignments(result: PatternResult): Map<Int, Char> {
+        val map = LinkedHashMap<Int, Char>()
+        result.usage().forEachIndexed { i, (colorIdx, _) ->
+            map[colorIdx] = SYMBOLS[i % SYMBOLS.size]
+        }
+        return map
+    }
+
+    /**
+     * 行列坐标带：四边都标，1-based。格子小于 18px 时按 10 格抽稀，
+     * 保证打印出来仍能看清；主线用实心黑，区分于浅色网格。
+     */
+    private fun drawRuler(
+        p: IntArray,
+        w: Int,
+        h: Int,
+        ox: Int,
+        oy: Int,
+        cell: Int,
+        cols: Int,
+        rows: Int,
+        ruler: Int,
+        titleH: Int,
+        rowOffset: Int,
+    ) {
+        val contentRight = ox + cols * cell
+        val contentBottom = oy + rows * cell
+        // 左/右/上/下四条坐标带。只包围图案区，不把符号版下方的对照表算进去。
+        fillRect(p, w, h, 0, titleH, ruler, contentBottom + ruler - titleH, RULER_BG)
+        fillRect(p, w, h, contentRight, titleH, ruler + 1, contentBottom + ruler - titleH, RULER_BG)
+        fillRect(p, w, h, ox, titleH, w - ox, ruler, RULER_BG)
+        fillRect(p, w, h, 0, contentBottom, w, ruler + 1, RULER_BG)
+        // 坐标带外框
+        drawVLineRange(p, w, h, ox, titleH, contentBottom + ruler, RULER_LINE)
+        drawHLine(p, w, h, oy, RULER_LINE)
+        drawVLineRange(p, w, h, contentRight, titleH, contentBottom + ruler, RULER_LINE)
+        drawHLineRange(p, w, h, contentBottom, 0, w, RULER_LINE)
+
+        val step = when {
+            cell >= 32 -> 1
+            cell >= 18 -> 5
+            else -> 10
+        }
+        val scale = (ruler * 0.55f / 7f).toInt().coerceIn(1, 3)
+        val glyphH = 7 * scale
+        for (gx in 0 until cols step step) {
+            val label = (gx + 1).toString()
+            val tw = label.length * 6 * scale - scale
+            val x = ox + gx * cell + (cell - tw) / 2
+            drawTextLine(
+                p, w, h, label, x,
+                titleH + (ruler - glyphH) / 2,
+                RULER_LINE, scale,
+            )
+            drawVLineRange(
+                p, w, h, ox + gx * cell,
+                titleH, titleH + ruler, RULER_LINE,
+            )
+            drawTextLine(
+                p, w, h, label, x,
+                contentBottom + (ruler - glyphH) / 2,
+                RULER_LINE, scale,
+            )
+            drawVLineRange(
+                p, w, h, ox + gx * cell,
+                contentBottom, contentBottom + ruler, RULER_LINE,
+            )
+        }
+        for (gy in 0 until rows step step) {
+            val label = (rowOffset + gy + 1).toString()
+            val tw = label.length * 6 * scale - scale
+            drawTextLine(
+                p, w, h, label,
+                (ruler - tw) / 2,
+                oy + gy * cell + (cell - glyphH) / 2,
+                RULER_LINE, scale,
+            )
+            drawTextLine(
+                p, w, h, label,
+                contentRight + (ruler - tw) / 2,
+                oy + gy * cell + (cell - glyphH) / 2,
+                RULER_LINE, scale,
+            )
+            drawHLineRange(
+                p, w, h, oy + gy * cell,
+                0, ox, RULER_LINE,
+            )
+            drawHLineRange(
+                p, w, h, oy + gy * cell,
+                contentRight, w, RULER_LINE,
+            )
+        }
     }
 
     // ---------- 基础绘图（纯像素操作） ----------
@@ -193,6 +323,14 @@ object ExportRenderer {
 
     private fun drawHLine(p: IntArray, w: Int, h: Int, y: Int, color: Int) {
         for (x in 0 until w) setPx(p, w, h, x, y, color)
+    }
+
+    private fun drawVLineRange(p: IntArray, w: Int, h: Int, x: Int, y0: Int, y1: Int, color: Int) {
+        for (y in y0 until y1) setPx(p, w, h, x, y, color)
+    }
+
+    private fun drawHLineRange(p: IntArray, w: Int, h: Int, y: Int, x0: Int, x1: Int, color: Int) {
+        for (x in x0 until x1) setPx(p, w, h, x, y, color)
     }
 
     private fun isLight(argb: Int): Boolean {

@@ -84,6 +84,7 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var exportMsg by remember { mutableStateOf<String?>(null) }
+    var pdfPreview by remember { mutableStateOf<ExportService.Exported.FileReady?>(null) }
     var pendingExport by remember {
         mutableStateOf<Pair<String, () -> ExportService.Exported?>?>(null)
     }
@@ -95,7 +96,11 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
             when (out) {
                 is ExportService.Exported.FileReady -> {
                     exportMsg = "$label 已保存到下载目录：${out.file.name}"
-                    ExportService.shareFile(context, out)
+                    if (out.file.extension.equals("pdf", ignoreCase = true)) {
+                        pdfPreview = out
+                    } else {
+                        ExportService.shareFile(context, out)
+                    }
                 }
                 is ExportService.Exported.Failed -> exportMsg = "$label 失败：${out.message}"
                 null -> exportMsg = null
@@ -249,7 +254,7 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
             ) {
                 items(usage.size) { i ->
                     val (idx, count) = usage[i]
-                    val entry = result.palette.colors[idx]
+                    val entry = result.palette.colors.getOrNull(idx) ?: return@items
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -361,6 +366,14 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
                 Text("开始拼")
             }
         }
+    }
+
+    pdfPreview?.let { file ->
+        PdfPreviewDialog(
+            exported = file,
+            onDismiss = { pdfPreview = null },
+            onShare = { ExportService.shareFile(context, file) },
+        )
     }
 }
 

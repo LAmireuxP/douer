@@ -41,6 +41,8 @@ data class ProjectEntity(
     val album: String = "",
     /** 参考原图路径（编辑器对比叠加用） */
     val refPath: String? = null,
+    /** 画像素分层工程 sidecar 路径（null = 普通图纸或旧项目） */
+    val studioPath: String? = null,
 )
 
 /**
@@ -80,9 +82,29 @@ interface ProjectDao {
     @Insert
     suspend fun insert(project: ProjectEntity): Long
 
-    // 编辑器完成：局部修改格数据与锁（含页数），保留施工进度（进度仅覆盖第 1 页）
-    @Query("UPDATE projects SET cells = :cells, locked = :locked, pages = :pages, thumbnailPath = :thumb, updatedAt = :now WHERE id = :id")
-    suspend fun updateCells(id: Long, cells: ByteArray, locked: ByteArray, pages: Int, thumb: String?, now: Long)
+    // 编辑器完成：格子、锁、页数、宽高一起写。裁剪会改尺寸，旧版漏写 width/height
+    // 正是“打开失败：数据尺寸不符”的来源；尺寸变化时施工进度也作废。
+    @Query(
+        "UPDATE projects SET width = :width, height = :height, cells = :cells, " +
+            "locked = :locked, pages = :pages, thumbnailPath = :thumb, " +
+            "doneCells = CASE WHEN width = :width AND height = :height THEN doneCells ELSE NULL END, " +
+            "buildCursor = CASE WHEN width = :width AND height = :height THEN buildCursor ELSE 0 END, " +
+            "updatedAt = :now WHERE id = :id",
+    )
+    suspend fun updateCells(
+        id: Long,
+        width: Int,
+        height: Int,
+        cells: ByteArray,
+        locked: ByteArray,
+        pages: Int,
+        thumb: String?,
+        now: Long,
+    )
+
+    /** 修复旧项目元数据：格子 BLOB 不变，只纠正宽高。 */
+    @Query("UPDATE projects SET width = :width, height = :height, updatedAt = :now WHERE id = :id")
+    suspend fun updateSize(id: Long, width: Int, height: Int, now: Long)
 
     // 重新生成：图纸整体变化（尺寸、色卡、格数据），施工进度随图纸作废（置空、游标归零），
     // 避免 doneCells 与新 cells 尺寸错位
@@ -108,17 +130,27 @@ interface ProjectDao {
     @Query("UPDATE projects SET fav = :fav, updatedAt = :now WHERE id = :id")
     suspend fun setFav(id: Long, fav: Boolean, now: Long)
 
+    // 批量收藏走一条 UPDATE，避免多选几十份时逐条开事务
+    @Query("UPDATE projects SET fav = :fav, updatedAt = :now WHERE id IN (:ids)")
+    suspend fun setFavAll(ids: List<Long>, fav: Boolean, now: Long)
+
     @Query("UPDATE projects SET album = :album, updatedAt = :now WHERE id = :id")
     suspend fun setAlbum(id: Long, album: String, now: Long)
 
+    @Query("UPDATE projects SET album = :album, updatedAt = :now WHERE id IN (:ids)")
+    suspend fun setAlbumAll(ids: List<Long>, album: String, now: Long)
+
     @Query("UPDATE projects SET refPath = :path, updatedAt = :now WHERE id = :id")
     suspend fun setRefPath(id: Long, path: String?, now: Long)
+
+    @Query("UPDATE projects SET studioPath = :path, updatedAt = :now WHERE id = :id")
+    suspend fun setStudioPath(id: Long, path: String?, now: Long)
 
     @Query("DELETE FROM projects WHERE id = :id")
     suspend fun delete(id: Long)
 }
 
-@Database(entities = [ProjectEntity::class], version = 3, exportSchema = false)
+@Database(entities = [ProjectEntity::class], version = 4, exportSchema = false)
 abstract class PindouDatabase : RoomDatabase() {
     abstract fun projectDao(): ProjectDao
 
@@ -139,6 +171,13 @@ abstract class PindouDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE projects ADD COLUMN fav INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE projects ADD COLUMN album TEXT NOT NULL DEFAULT ''")
                 db.execSQL("ALTER TABLE projects ADD COLUMN refPath TEXT")
+            }
+        }
+
+        /** v3 → v4：画像素分层工程 sidecar 路径（旧项目为 null） */
+        val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE projects ADD COLUMN studioPath TEXT")
             }
         }
     }
