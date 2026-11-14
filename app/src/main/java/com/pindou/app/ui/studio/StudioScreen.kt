@@ -177,12 +177,25 @@ fun StudioScreen(vm: AppViewModel) {
                     .weight(1f)
                     .padding(start = 2.dp),
             ) {
-                Text(
-                    "画像素 · ${engine.width}×${engine.height}",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "画像素 · ",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                    )
+                    Text(
+                        "${engine.width}×${engine.height}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(5.dp))
+                            .clickable { panel = StudioPanel.CANVAS }
+                            .padding(horizontal = 3.dp, vertical = 1.dp),
+                    )
+                }
                 Text(
                     "第 ${engine.frameIndex + 1}/${engine.frameCount} 帧 · ${engine.layerCount} 层 · ${palette.brandLabel} · ${usedColorCount} 色",
                     style = MaterialTheme.typography.labelSmall,

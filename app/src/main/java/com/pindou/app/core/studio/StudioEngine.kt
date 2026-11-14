@@ -914,6 +914,50 @@ class StudioEngine(
         return index
     }
 
+    /**
+     * 把图片量化结果放到最底层，再在上面新建一张透明绘制层并选中。
+     *
+     * 底层默认锁定，避免用户在参考图上误画；需要修图时可在图层面板解锁。
+     * 如果当前只有一张空图层，直接复用它，避免留下无意义的空层。
+     * 返回新建绘制层的索引；整个操作可一次撤销。
+     */
+    fun importImageAsBottomLayer(cells: IntArray, name: String = "底层图片"): Int {
+        require(cells.size == width * height) { "图片尺寸与画布不一致" }
+        val before = snapshot()
+        val blankSingleLayer = layers.size == 1 && layers[0].cells.all { it < 0 }
+        if (blankSingleLayer) {
+            layers[0].apply {
+                this.name = name
+                this.cells = cells.copyOf()
+                this.visible = true
+                this.locked = true
+            }
+        } else {
+            layers.add(
+                0,
+                StudioLayer(
+                    name = name,
+                    cells = cells.copyOf(),
+                    visible = true,
+                    locked = true,
+                ),
+            )
+        }
+        val drawIndex = if (blankSingleLayer) 1 else layers.size
+        layers.add(
+            drawIndex,
+            StudioLayer(
+                name = "绘制层",
+                cells = IntArray(width * height) { -1 },
+            ),
+        )
+        frame.activeLayer = drawIndex
+        selection = null
+        pushSnapshot(before)
+        bump()
+        return drawIndex
+    }
+
     fun duplicateLayer(index: Int): Int {
         if (index !in layers.indices) return -1
         val before = snapshot()

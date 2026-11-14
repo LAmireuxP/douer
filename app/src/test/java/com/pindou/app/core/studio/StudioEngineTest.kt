@@ -85,6 +85,40 @@ class StudioEngineTest {
     }
 
     @Test
+    fun `导入底层图片会锁定图片层并在上方新建绘制层`() {
+        val e = engine(4, 4)
+        val image = IntArray(16) { if (it == 0) 1 else -1 }
+
+        val drawIndex = e.importImageAsBottomLayer(image)
+
+        assertEquals(2, e.layerCount)
+        assertEquals("底层图片", e.layers[0].name)
+        assertTrue(e.layers[0].locked)
+        assertEquals(1, e.layers[0].cells[0])
+        assertEquals(1, drawIndex)
+        assertEquals("绘制层", e.activeLayer.name)
+        assertEquals(-1, e.activeLayer.cells[0])
+        assertTrue(e.undo())
+        assertEquals(1, e.layerCount)
+        assertEquals(-1, e.layers[0].cells[0])
+    }
+
+    @Test
+    fun `已有内容导入底层图片时保留原图层`() {
+        val e = engine(4, 4)
+        e.setCell(0, 2)
+        val drawIndex = e.importImageAsBottomLayer(IntArray(16) { if (it == 1) 1 else -1 })
+
+        assertEquals(3, e.layerCount)
+        assertEquals("底层图片", e.layers[0].name)
+        assertEquals(2, e.layers[1].cells[0])
+        assertEquals("绘制层", e.layers[2].name)
+        assertEquals(2, drawIndex)
+        assertEquals(2, e.composite()[0])
+        assertEquals(1, e.composite()[1])
+    }
+
+    @Test
     fun `向下合并到隐藏图层后结果可见`() {
         val e = engine(4, 4)
         e.setCell(0, 1)

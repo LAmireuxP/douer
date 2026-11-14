@@ -2,6 +2,9 @@
 
 package com.pindou.app.ui.studio
 
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -44,6 +47,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,6 +56,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -60,10 +65,14 @@ import com.pindou.app.core.editor.SymmetryMode
 import com.pindou.app.core.palette.BeadPalette
 import com.pindou.app.core.studio.StudioBlendMode
 import com.pindou.app.core.studio.StudioExport
+import com.pindou.app.core.studio.StudioImageImport
 import com.pindou.app.ui.icon.MorphIcons
 import com.pindou.app.ui.theme.ClayColors
 import com.pindou.app.ui.theme.Spacing
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** 面板类型。底部动作栏打开对应的 ModalBottomSheet。 */
 enum class StudioPanel { LAYERS, FRAMES, EXPORT, CANVAS, FILL }
@@ -789,8 +798,44 @@ private fun SectionLabel(text: String) {
 fun StudioLayersPanel(session: StudioSession, onClose: () -> Unit) {
     if (session.revision < 0) return
     val engine = session.engine
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var renameIndex by remember { mutableIntStateOf(-1) }
     var renameText by remember { mutableStateOf("") }
+    var importing by remember { mutableStateOf(false) }
+    var importStatus by remember { mutableStateOf<String?>(null) }
+
+    val imageLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null || importing) return@rememberLauncherForActivityResult
+        importing = true
+        importStatus = "正在把图片铺到底层…"
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    StudioImageImport.decodeCells(
+                        resolver = context.contentResolver,
+                        uri = uri,
+                        targetWidth = engine.width,
+                        targetHeight = engine.height,
+                        palette = session.palette,
+                    )
+                }
+            }.onSuccess { cells ->
+                if (cells.none { it >= 0 }) {
+                    importStatus = "图片没有可识别的像素"
+                } else {
+                    session.act { it.importImageAsBottomLayer(cells) }
+                    importStatus = "已导入底层，并新建「绘制层」"
+                    Toast.makeText(context, "已导入底层，可直接在上层画像素", Toast.LENGTH_SHORT).show()
+                }
+            }.onFailure {
+                importStatus = "导入失败：${it.message ?: "无法读取图片"}"
+            }
+            importing = false
+        }
+    }
 
     ModalBottomSheet(onDismissRequest = onClose) {
         Column(
@@ -812,6 +857,10 @@ fun StudioLayersPanel(session: StudioSession, onClose: () -> Unit) {
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
+                ActionChip(
+                    text = if (importing) "正在导入…" else "导入底层图片",
+                    enabled = !importing,
+                ) { imageLauncher.launch(arrayOf("image/*")) }
                 ActionChip("+ 新图层") { session.act { it.addLayer(false) } }
                 ActionChip("复制") { session.act { it.addLayer(true) } }
                 ActionChip("删除", enabled = engine.layerCount > 1) {
@@ -824,6 +873,14 @@ fun StudioLayersPanel(session: StudioSession, onClose: () -> Unit) {
                     session.act { it.flattenFrame() }
                 }
                 ActionChip("清空") { session.act { it.clearLayer() } }
+            }
+            importStatus?.let { status ->
+                Text(
+                    status,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = Spacing.md, vertical = 2.dp),
+                )
             }
 
             SectionLabel("图层栈（上 = 更靠前）")

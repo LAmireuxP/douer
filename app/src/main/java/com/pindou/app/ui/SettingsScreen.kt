@@ -323,34 +323,33 @@ fun SettingsScreen(vm: AppViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 val context = LocalContext.current
+                val issueUrl = "https://github.com/LAmireuxP/douer/issues"
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(8.dp))
                         .clickable {
                             val intent = Intent(
-                                Intent.ACTION_SENDTO,
-                                Uri.parse("mailto:li.amireux@qq.com"),
-                            ).apply {
-                                putExtra(Intent.EXTRA_SUBJECT, "豆儿反馈")
-                            }
+                                Intent.ACTION_VIEW,
+                                Uri.parse(issueUrl),
+                            )
                             runCatching { context.startActivity(intent) }
                                 .onFailure {
                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
                                         as ClipboardManager
                                     clipboard.setPrimaryClip(
-                                        ClipData.newPlainText("反馈邮箱", "li.amireux@qq.com"),
+                                        ClipData.newPlainText("问题反馈地址", issueUrl),
                                     )
-                                    Toast.makeText(context, "邮箱已复制", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "反馈地址已复制", Toast.LENGTH_SHORT).show()
                                 }
                         }
                         .padding(vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("反馈通道", style = MaterialTheme.typography.bodyMedium)
+                    Text("问题反馈", style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.weight(1f))
                     Text(
-                        "li.amireux@qq.com",
+                        "GitHub / Gitee Issues",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
                     )
