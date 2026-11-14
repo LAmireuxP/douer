@@ -317,6 +317,11 @@ fun SettingsScreen(vm: AppViewModel) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Text(
+                    "Gitee：gitee.com/L_Amireux_P/douer",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 val context = LocalContext.current
                 Row(
                     modifier = Modifier
