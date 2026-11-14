@@ -313,7 +313,7 @@ fun SettingsScreen(vm: AppViewModel) {
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
-                    "源码：github.com/LAmireuxP/douer",
+                    "GitHub：github.com/LAmireuxP/douer",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
