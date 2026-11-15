@@ -18,7 +18,7 @@ import java.io.FileOutputStream
 object StudioCodec {
 
     private const val MAGIC = 0x50535444 // "PSTD"
-    private const val VERSION = 1
+    private const val VERSION = 2
     private const val MAX_FRAMES = 240
     private const val MAX_LAYERS = 64
     private const val MAX_SIDE = 512
@@ -44,6 +44,14 @@ object StudioCodec {
                     out.writeInt(layer.blend.ordinal)
                     for (c in layer.cells) out.writeInt(c)
                 }
+                val reference = frame.reference
+                out.writeBoolean(reference != null)
+                if (reference != null) {
+                    out.writeInt(reference.width)
+                    out.writeInt(reference.height)
+                    out.writeBoolean(reference.visible)
+                    for (pixel in reference.argb) out.writeInt(pixel)
+                }
             }
         }
         true
@@ -55,7 +63,7 @@ object StudioCodec {
         DataInputStream(BufferedInputStream(FileInputStream(file))).use { input ->
             if (input.readInt() != MAGIC) return null
             val version = input.readInt()
-            if (version != VERSION) return null
+            if (version !in 1..VERSION) return null
             val width = input.readInt()
             val height = input.readInt()
             if (width !in 1..MAX_SIDE || height !in 1..MAX_SIDE) return null
@@ -79,7 +87,24 @@ object StudioCodec {
                     val cells = IntArray(width * height) { input.readInt() }
                     layers.add(StudioLayer(name, cells, visible, locked, opacity, blend))
                 }
-                frames.add(StudioFrame(layers, active.coerceIn(0, layers.size - 1), hold))
+                val reference = if (version >= 2 && input.readBoolean()) {
+                    val refW = input.readInt()
+                    val refH = input.readInt()
+                    if (refW !in 1..MAX_SIDE * 4 || refH !in 1..MAX_SIDE * 4) return null
+                    val refVisible = input.readBoolean()
+                    val pixels = IntArray(refW * refH) { input.readInt() }
+                    StudioReference(refW, refH, pixels, refVisible)
+                } else {
+                    null
+                }
+                frames.add(
+                    StudioFrame(
+                        layers,
+                        active.coerceIn(0, layers.size - 1),
+                        hold,
+                        reference,
+                    ),
+                )
             }
             StudioEngine(width, height, frames, frameIndex, paletteArgb)
         }

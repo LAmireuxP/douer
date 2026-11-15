@@ -798,6 +798,7 @@ private fun SectionLabel(text: String) {
 fun StudioLayersPanel(session: StudioSession, onClose: () -> Unit) {
     if (session.revision < 0) return
     val engine = session.engine
+    val reference = engine.reference
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var renameIndex by remember { mutableIntStateOf(-1) }
@@ -814,22 +815,17 @@ fun StudioLayersPanel(session: StudioSession, onClose: () -> Unit) {
         scope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    StudioImageImport.decodeCells(
+                    StudioImageImport.decodeReference(
                         resolver = context.contentResolver,
                         uri = uri,
-                        targetWidth = engine.width,
-                        targetHeight = engine.height,
-                        palette = session.palette,
+                        canvasWidth = engine.width,
+                        canvasHeight = engine.height,
                     )
                 }
-            }.onSuccess { cells ->
-                if (cells.none { it >= 0 }) {
-                    importStatus = "图片没有可识别的像素"
-                } else {
-                    session.act { it.importImageAsBottomLayer(cells) }
-                    importStatus = "已导入底层，并新建「绘制层」"
-                    Toast.makeText(context, "已导入底层，可直接在上层画像素", Toast.LENGTH_SHORT).show()
-                }
+            }.onSuccess { imported ->
+                session.act { it.importReferenceImage(imported) }
+                importStatus = "已导入底层原图；软件不会自动转像素，请在上层手动画"
+                Toast.makeText(context, "原图已铺到底层，可直接在上层点像素", Toast.LENGTH_SHORT).show()
             }.onFailure {
                 importStatus = "导入失败：${it.message ?: "无法读取图片"}"
             }
@@ -861,6 +857,9 @@ fun StudioLayersPanel(session: StudioSession, onClose: () -> Unit) {
                     text = if (importing) "正在导入…" else "导入底层图片",
                     enabled = !importing,
                 ) { imageLauncher.launch(arrayOf("image/*")) }
+                ActionChip("清除底层图", enabled = reference != null) {
+                    session.act { it.clearReference() }
+                }
                 ActionChip("+ 新图层") { session.act { it.addLayer(false) } }
                 ActionChip("复制") { session.act { it.addLayer(true) } }
                 ActionChip("删除", enabled = engine.layerCount > 1) {
@@ -954,6 +953,38 @@ fun StudioLayersPanel(session: StudioSession, onClose: () -> Unit) {
                         modifier = Modifier.size(30.dp),
                     ) {
                         Icon(MorphIcons.ArrowDown, contentDescription = "下移", modifier = Modifier.size(17.dp))
+                    }
+                }
+            }
+
+            if (reference != null) {
+                SectionLabel("底层原图（不参与导出）")
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Spacing.sm, vertical = 1.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(
+                        onClick = { session.act { it.setReferenceVisible(!reference.visible) } },
+                        modifier = Modifier.size(34.dp),
+                    ) {
+                        Icon(
+                            if (reference.visible) MorphIcons.Eye else MorphIcons.EyeOff,
+                            contentDescription = if (reference.visible) "隐藏原图" else "显示原图",
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text("底层原图", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "${reference.width}×${reference.height} · 原画参考，不参与导出",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }

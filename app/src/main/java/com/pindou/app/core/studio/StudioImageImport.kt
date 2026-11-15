@@ -7,72 +7,51 @@ import android.graphics.Canvas
 import android.graphics.Matrix
 import android.media.ExifInterface
 import android.net.Uri
-import com.pindou.app.core.color.ColorConversions
-import com.pindou.app.core.palette.BeadPalette
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
- * 把相册图片缩放、居中放进画布，再按当前色卡量化成图层格。
+ * 把相册图片解码成底层原图参考。
  *
- * 量化按唯一 RGB 缓存：照片缩到 100×100 后通常只有几千种颜色，
- * 避免对每个像素重复跑 221 次 CIEDE2000。复杂度 O(唯一色数 × 色卡数)。
+ * 关键点：这里不做色卡量化，也不经过 PixelCalibration。保留图片真实 RGB，
+ * 只按画布比例居中缩放；上层像素层由用户自己点。
  */
 object StudioImageImport {
 
     private const val MAX_DECODE_SIDE = 2048
-    private const val ALPHA_CUTOFF = 16
+    private const val MAX_REFERENCE_SIDE = 1280
 
-    fun decodeCells(
+    fun decodeReference(
         resolver: ContentResolver,
         uri: Uri,
-        targetWidth: Int,
-        targetHeight: Int,
-        palette: BeadPalette,
-    ): IntArray {
-        require(targetWidth > 0 && targetHeight > 0) { "画布尺寸无效" }
-        require(palette.colors.isNotEmpty()) { "当前色卡没有颜色" }
+        canvasWidth: Int,
+        canvasHeight: Int,
+    ): StudioReference {
+        require(canvasWidth > 0 && canvasHeight > 0) { "画布尺寸无效" }
+        val canvasAspect = canvasWidth.toFloat() / canvasHeight
+        val refW: Int
+        val refH: Int
+        if (canvasAspect >= 1f) {
+            refW = MAX_REFERENCE_SIDE
+            refH = (MAX_REFERENCE_SIDE / canvasAspect).roundToInt().coerceAtLeast(1)
+        } else {
+            refH = MAX_REFERENCE_SIDE
+            refW = (MAX_REFERENCE_SIDE * canvasAspect).roundToInt().coerceAtLeast(1)
+        }
 
         val bitmap = decodeBitmap(resolver, uri)
         return try {
-            val fitted = fitCenter(bitmap, targetWidth, targetHeight)
+            val fitted = fitCenter(bitmap, refW, refH)
             try {
-                val pixels = IntArray(targetWidth * targetHeight)
-                fitted.getPixels(pixels, 0, targetWidth, 0, 0, targetWidth, targetHeight)
-                quantize(pixels, palette)
+                val pixels = IntArray(refW * refH)
+                fitted.getPixels(pixels, 0, refW, 0, 0, refW, refH)
+                StudioReference(refW, refH, pixels)
             } finally {
                 if (fitted !== bitmap) fitted.recycle()
             }
         } finally {
             bitmap.recycle()
-        }
-    }
-
-    /** 纯函数，便于单测；[argb] 已经是目标画布尺寸。 */
-    internal fun quantize(argb: IntArray, palette: BeadPalette): IntArray {
-        if (palette.colors.isEmpty()) return IntArray(argb.size) { -1 }
-        val cache = HashMap<Int, Int>(minOf(argb.size, 4096))
-        return IntArray(argb.size) { i ->
-            val color = argb[i]
-            val alpha = color ushr 24
-            if (alpha < ALPHA_CUTOFF) {
-                -1
-            } else {
-                // 半透明边缘先压到白底，避免描边处落成一圈深色豆。
-                val rgb = if (alpha == 255) {
-                    color and 0xFFFFFF
-                } else {
-                    val inv = 255 - alpha
-                    val r = (((color shr 16) and 0xFF) * alpha + 255 * inv) / 255
-                    val g = (((color shr 8) and 0xFF) * alpha + 255 * inv) / 255
-                    val b = ((color and 0xFF) * alpha + 255 * inv) / 255
-                    (r shl 16) or (g shl 8) or b
-                }
-                cache.getOrPut(rgb) {
-                    val opaque = (0xFF shl 24) or rgb
-                    palette.nearestIndex(ColorConversions.argbToLab(opaque))
-                }
-            }
         }
     }
 
@@ -108,8 +87,8 @@ object StudioImageImport {
     private fun fitCenter(source: Bitmap, targetW: Int, targetH: Int): Bitmap {
         if (source.width == targetW && source.height == targetH) return source
         val scale = min(targetW.toFloat() / source.width, targetH.toFloat() / source.height)
-        val drawW = max(1, (source.width * scale).toInt())
-        val drawH = max(1, (source.height * scale).toInt())
+        val drawW = max(1, (source.width * scale).roundToInt())
+        val drawH = max(1, (source.height * scale).roundToInt())
         val scaled = Bitmap.createScaledBitmap(source, drawW, drawH, true)
         val out = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
         Canvas(out).drawBitmap(

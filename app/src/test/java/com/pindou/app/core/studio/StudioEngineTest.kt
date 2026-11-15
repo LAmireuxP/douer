@@ -85,37 +85,46 @@ class StudioEngineTest {
     }
 
     @Test
-    fun `导入底层图片会锁定图片层并在上方新建绘制层`() {
+    fun `导入原图参考不进入色卡图层也不自动转像素`() {
         val e = engine(4, 4)
-        val image = IntArray(16) { if (it == 0) 1 else -1 }
+        val reference = StudioReference(
+            2,
+            2,
+            intArrayOf(
+                0xFFFF0000.toInt(),
+                0xFF00FF00.toInt(),
+                0xFF0000FF.toInt(),
+                0xFFFFFFFF.toInt(),
+            ),
+        )
 
-        val drawIndex = e.importImageAsBottomLayer(image)
+        val drawIndex = e.importReferenceImage(reference)
 
-        assertEquals(2, e.layerCount)
-        assertEquals("底层图片", e.layers[0].name)
-        assertTrue(e.layers[0].locked)
-        assertEquals(1, e.layers[0].cells[0])
-        assertEquals(1, drawIndex)
+        assertEquals(1, e.layerCount)
+        assertEquals(0, drawIndex)
         assertEquals("绘制层", e.activeLayer.name)
         assertEquals(-1, e.activeLayer.cells[0])
+        assertTrue(e.reference === reference)
+        assertTrue(e.reference!!.visible)
+        assertEquals(4, e.reference!!.argb.size)
+        assertEquals(-1, e.composite()[0])
         assertTrue(e.undo())
-        assertEquals(1, e.layerCount)
-        assertEquals(-1, e.layers[0].cells[0])
+        assertNull(e.reference)
     }
 
     @Test
-    fun `已有内容导入底层图片时保留原图层`() {
+    fun `已有内容导入原图参考时保留原图层并新建绘制层`() {
         val e = engine(4, 4)
         e.setCell(0, 2)
-        val drawIndex = e.importImageAsBottomLayer(IntArray(16) { if (it == 1) 1 else -1 })
+        val reference = StudioReference(1, 1, intArrayOf(0xFFFF00FF.toInt()))
+        val drawIndex = e.importReferenceImage(reference)
 
-        assertEquals(3, e.layerCount)
-        assertEquals("底层图片", e.layers[0].name)
-        assertEquals(2, e.layers[1].cells[0])
-        assertEquals("绘制层", e.layers[2].name)
-        assertEquals(2, drawIndex)
+        assertEquals(2, e.layerCount)
+        assertEquals(2, e.layers[0].cells[0])
+        assertEquals("绘制层", e.layers[1].name)
+        assertEquals(1, drawIndex)
         assertEquals(2, e.composite()[0])
-        assertEquals(1, e.composite()[1])
+        assertTrue(e.reference === reference)
     }
 
     @Test

@@ -30,13 +30,37 @@ class StudioLayer(
     fun copy(): StudioLayer = StudioLayer(name, cells.copyOf(), visible, locked, opacity, blend)
 }
 
+/**
+ * 底层原图参考。存的是高分辨率 ARGB，而不是色卡索引：
+ * 它只用于屏幕临摹，不参与 composite/导出，也不会被自动转成像素。
+ */
+class StudioReference(
+    val width: Int,
+    val height: Int,
+    val argb: IntArray,
+    var visible: Boolean = true,
+) {
+    init {
+        require(width > 0 && height > 0 && argb.size == width * height)
+    }
+
+    fun copy(): StudioReference = StudioReference(width, height, argb.copyOf(), visible)
+}
+
 class StudioFrame(
     val layers: MutableList<StudioLayer>,
     var activeLayer: Int = 0,
     /** 该帧在动画里的停留时间（毫秒）。GIF 导出按帧读取。 */
     var holdMs: Int = 100,
+    /** 高分辨率原图参考；只在屏幕显示，不进入色卡合成/导出。 */
+    var reference: StudioReference? = null,
 ) {
-    fun copy(): StudioFrame = StudioFrame(layers.map { it.copy() }.toMutableList(), activeLayer, holdMs)
+    fun copy(): StudioFrame = StudioFrame(
+        layers.map { it.copy() }.toMutableList(),
+        activeLayer,
+        holdMs,
+        reference?.copy(),
+    )
 }
 
 /**
@@ -97,6 +121,7 @@ class StudioEngine(
     val layers: MutableList<StudioLayer> get() = frame.layers
     val activeLayerIndex: Int get() = frame.activeLayer.coerceIn(0, layers.size - 1)
     val activeLayer: StudioLayer get() = layers[activeLayerIndex]
+    val reference: StudioReference? get() = frame.reference
     val layerCount: Int get() = layers.size
     val frameCount: Int get() = frames.size
     val hasSelection: Boolean get() = selection != null
@@ -915,47 +940,40 @@ class StudioEngine(
     }
 
     /**
-     * 把图片量化结果放到最底层，再在上面新建一张透明绘制层并选中。
-     *
-     * 底层默认锁定，避免用户在参考图上误画；需要修图时可在图层面板解锁。
-     * 如果当前只有一张空图层，直接复用它，避免留下无意义的空层。
-     * 返回新建绘制层的索引；整个操作可一次撤销。
+     * 把原图参考放到画布底层，再确保上面有一张可画的像素层。
+     * 参考图保持原始 RGB，不量化、不参与导出。
      */
-    fun importImageAsBottomLayer(cells: IntArray, name: String = "底层图片"): Int {
-        require(cells.size == width * height) { "图片尺寸与画布不一致" }
+    fun importReferenceImage(reference: StudioReference): Int {
         val before = snapshot()
+        frame.reference = reference
+        reference.visible = true
         val blankSingleLayer = layers.size == 1 && layers[0].cells.all { it < 0 }
-        if (blankSingleLayer) {
-            layers[0].apply {
-                this.name = name
-                this.cells = cells.copyOf()
-                this.visible = true
-                this.locked = true
-            }
+        val drawIndex = if (blankSingleLayer) {
+            layers[0].name = "绘制层"
+            0
         } else {
-            layers.add(
-                0,
-                StudioLayer(
-                    name = name,
-                    cells = cells.copyOf(),
-                    visible = true,
-                    locked = true,
-                ),
-            )
+            layers.add(StudioLayer("绘制层", IntArray(width * height) { -1 }))
+            layers.lastIndex
         }
-        val drawIndex = if (blankSingleLayer) 1 else layers.size
-        layers.add(
-            drawIndex,
-            StudioLayer(
-                name = "绘制层",
-                cells = IntArray(width * height) { -1 },
-            ),
-        )
         frame.activeLayer = drawIndex
         selection = null
         pushSnapshot(before)
         bump()
         return drawIndex
+    }
+
+    fun setReferenceVisible(visible: Boolean) {
+        val ref = frame.reference ?: return
+        ref.visible = visible
+        bump()
+    }
+
+    fun clearReference() {
+        if (frame.reference == null) return
+        val before = snapshot()
+        frame.reference = null
+        pushSnapshot(before)
+        bump()
     }
 
     fun duplicateLayer(index: Int): Int {
@@ -1638,7 +1656,12 @@ class StudioEngine(
                     layer.blend,
                 )
             }.ifEmpty { listOf(StudioLayer("图层 1", IntArray(width * height) { -1 })) }
-            return StudioFrame(fixed.toMutableList(), activeLayer.coerceIn(0, fixed.size - 1), holdMs)
+            return StudioFrame(
+                fixed.toMutableList(),
+                activeLayer.coerceIn(0, fixed.size - 1),
+                holdMs,
+                reference?.copy(),
+            )
         }
     }
 }

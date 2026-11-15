@@ -169,6 +169,17 @@ fun StudioCanvas(
     }
     val onionImage = remember(onionBitmap) { onionBitmap.asImageBitmap() }
     val lastRender = remember(engine, engine.width, engine.height) { intArrayOf(-1, -1) }
+    // 原图引用不是 Compose state；revision 变化时重新取一次，否则导入完成后
+    // 画布可能仍持有导入前的 null 引用。
+    val reference = remember(session.revision, engine.frameIndex) { engine.reference }
+    val referenceBitmap = remember(reference) {
+        reference?.let { ref ->
+            Bitmap.createBitmap(ref.width, ref.height, Bitmap.Config.ARGB_8888).apply {
+                setPixels(ref.argb, 0, ref.width, 0, 0, ref.width, ref.height)
+            }
+        }
+    }
+    val referenceImage = remember(referenceBitmap) { referenceBitmap?.asImageBitmap() }
 
     val checkerPaint = remember {
         val tile = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
@@ -543,6 +554,20 @@ fun StudioCanvas(
             } else {
                 c.nativeCanvas.drawRect(rect, Paint().apply { color = 0xFFFFFFFF.toInt() })
             }
+        }
+
+        if (referenceImage != null && reference != null && reference.visible) {
+            drawImage(
+                image = referenceImage,
+                srcOffset = IntOffset.Zero,
+                srcSize = IntSize(reference.width, reference.height),
+                dstOffset = IntOffset(origin.x.roundToInt(), origin.y.roundToInt()),
+                dstSize = IntSize(
+                    (engine.width * cell).roundToInt().coerceAtLeast(1),
+                    (engine.height * cell).roundToInt().coerceAtLeast(1),
+                ),
+                filterQuality = FilterQuality.Medium,
+            )
         }
 
         if (lastRender[0] != revision || lastRender[1] != engine.frameIndex) {

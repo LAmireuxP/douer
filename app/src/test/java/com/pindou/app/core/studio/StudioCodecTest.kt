@@ -26,6 +26,12 @@ class StudioCodecTest {
         e.setLayerBlend(1, StudioBlendMode.SCREEN)
         e.setLayerLocked(1, true)
         e.setLayerVisible(1, true)
+        e.frames[0].reference = StudioReference(
+            2,
+            1,
+            intArrayOf(0xFF112233.toInt(), 0xFF445566.toInt()),
+            visible = false,
+        )
         e.addFrame(true)
         e.setFrameHold(1, 240)
         e.setCell(3, 2)
@@ -46,6 +52,13 @@ class StudioCodecTest {
             assertEquals(0.35f, loaded.frames[0].layers[1].opacity, 0.001f)
             assertEquals(StudioBlendMode.SCREEN, loaded.frames[0].layers[1].blend)
             assertTrue(loaded.frames[0].layers[1].locked)
+            assertEquals(2, loaded.frames[0].reference!!.width)
+            assertEquals(1, loaded.frames[0].reference!!.height)
+            assertFalse(loaded.frames[0].reference!!.visible)
+            assertEquals(
+                0xFF445566.toInt(),
+                loaded.frames[0].reference!!.argb[1],
+            )
             assertEquals(240, loaded.frames[1].holdMs)
         } finally {
             file.delete()
