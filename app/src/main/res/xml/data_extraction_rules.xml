@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  API 31+ 的云备份 / 设备迁移规则。
+  项目数据（数据库、参考照片、缩略图、分层工程）不离开设备；
+  设置项仍允许随系统备份与换机迁移。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="database" path="pindou.db" />
+        <exclude domain="database" path="pindou.db-shm" />
+        <exclude domain="database" path="pindou.db-wal" />
+        <exclude domain="file" path="refs" />
+        <exclude domain="file" path="thumbs" />
+        <exclude domain="file" path="studio" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="database" path="pindou.db" />
+        <exclude domain="database" path="pindou.db-shm" />
+        <exclude domain="database" path="pindou.db-wal" />
+        <exclude domain="file" path="refs" />
+        <exclude domain="file" path="thumbs" />
+        <exclude domain="file" path="studio" />
+    </device-transfer>
+</data-extraction-rules>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  API 23–30 的 Auto Backup 规则。
+  项目库数据库、参考照片、缩略图和画像素分层工程不进入用户云备份；
+  只保留设置等轻量数据，换机迁移作品请使用 .bpat / PNG / PDF 导出。
+-->
+<full-backup-content>
+    <exclude domain="database" path="pindou.db" />
+    <exclude domain="database" path="pindou.db-shm" />
+    <exclude domain="database" path="pindou.db-wal" />
+    <exclude domain="file" path="refs" />
+    <exclude domain="file" path="thumbs" />
+    <exclude domain="file" path="studio" />
+</full-backup-content>
