@@ -91,7 +91,7 @@ class ExportRendererTest {
             ExportRenderer.RenderOptions(cellPx = 16, showCodes = false, showGrid = false),
         )
         // 空格保持背景色
-        assertEquals(0xFFFAFAFA.toInt(), bmp.pixels[0])
+        assertEquals(0xFFFFFFFF.toInt(), bmp.pixels[0])
         assertEquals(0xFFFF0000.toInt(), bmp.pixels[16])
     }
 
@@ -122,7 +122,7 @@ class ExportRendererTest {
         )
         // 坐标带里应有黑色刻度/数字
         val band = (0 until ruler * bmp.width).map { bmp.pixels[it] }
-        assertTrue(band.any { it == 0xFF2A2A2A.toInt() })
+        assertTrue(band.any { it == 0xFF1A1A1A.toInt() })
     }
 
     @Test
@@ -139,15 +139,15 @@ class ExportRendererTest {
             ),
         )
         val rightBand = (0 until bmp.height).map {
-            bmp.pixels[it * bmp.width + bmp.width - 2]
+            bmp.pixels[it * bmp.width + bmp.width - 3]
         }
         val bottomBand = (0 until bmp.width).map {
-            bmp.pixels[(bmp.height - 2) * bmp.width + it]
+            bmp.pixels[(bmp.height - 3) * bmp.width + it]
         }
-        assertTrue(rightBand.any { it == 0xFFF1F1EB.toInt() })
-        assertTrue(bottomBand.any { it == 0xFFF1F1EB.toInt() })
-        assertTrue(rightBand.any { it == 0xFF2A2A2A.toInt() })
-        assertTrue(bottomBand.any { it == 0xFF2A2A2A.toInt() })
+        assertTrue(rightBand.any { it == 0xFFFFFFFF.toInt() })
+        assertTrue(bottomBand.any { it == 0xFFFFFFFF.toInt() })
+        assertTrue(rightBand.any { it == 0xFF1A1A1A.toInt() })
+        assertTrue(bottomBand.any { it == 0xFF1A1A1A.toInt() })
         // 图案区右边界之外仍有一整条坐标带。
         assertTrue(bmp.width > ruler * 2 + 3 * cell)
         assertTrue(bmp.height > ruler * 2 + 2 * cell)

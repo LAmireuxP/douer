@@ -80,6 +80,8 @@ class StudioSession(
     var showGrid by mutableStateOf(true)
     var showCenterLines by mutableStateOf(false)
     var showCodes by mutableStateOf(true)
+    /** 导出图纸时只标同色区域外圈；关闭则每格都标。 */
+    var simplifiedLabels by mutableStateOf(true)
     var pixelPerfect by mutableStateOf(true)
     var onionSkin by mutableStateOf(false)
     var transparentBackground by mutableStateOf(true)

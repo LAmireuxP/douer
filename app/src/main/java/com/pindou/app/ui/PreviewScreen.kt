@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -24,6 +25,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -39,7 +41,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.pindou.app.core.export.ExportService
+import com.pindou.app.core.pattern.CodeLabelMode
 import com.pindou.app.ui.shadcn.Button
 import com.pindou.app.ui.shadcn.OutlinedButton
 import com.pindou.app.ui.shadcn.ShCard
@@ -72,6 +77,9 @@ fun PreviewScreen(vm: AppViewModel) {
 @Composable
 private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern.PatternResult) {
     var showCodes by remember { mutableStateOf(true) }
+    var simplifiedLabels by remember { mutableStateOf(true) }
+    var fullscreen by remember { mutableStateOf(false) }
+    val codeLabels = if (simplifiedLabels) CodeLabelMode.OUTLINE else CodeLabelMode.FULL
     val pages = remember(result, vm.projectPages) { vm.currentPages().ifEmpty { listOf(result) } }
     var pageIdx by remember(pages) { mutableIntStateOf(0) }
     val currentPage = pages[pageIdx.coerceIn(0, pages.size - 1)]
@@ -133,14 +141,13 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = Spacing.md),
+            .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(Spacing.md),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = Spacing.sm),
+                .padding(start = Spacing.md, end = Spacing.md, top = Spacing.sm),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = { vm.backFromPreview() }) {
@@ -155,6 +162,9 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            IconButton(onClick = { fullscreen = true }) {
+                Icon(MorphIcons.Expand, contentDescription = "全屏查看图纸")
+            }
             Text("色号", style = MaterialTheme.typography.labelLarge)
             Switch(
                 checked = showCodes,
@@ -163,7 +173,12 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
             )
         }
 
-        ShCard(modifier = Modifier.fillMaxWidth()) {
+        // 图纸不套卡片、不留左右边距：整张纸铺满屏宽，长宽比保持
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
             Column {
                 if (pages.size > 1) {
                     Row(
@@ -192,7 +207,11 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
                         .fillMaxWidth()
                         .aspectRatio(result.width.toFloat() / result.height.toFloat()),
                 ) {
-                    PatternCanvas(result = currentPage, showCodes = showCodes)
+                    PatternCanvas(
+                        result = currentPage,
+                        showCodes = showCodes,
+                        codeLabels = codeLabels,
+                    )
                 }
                 // 预览画布支持捏合缩放；1 倍下每格小于 26px 时色号画不出来，提示捏合放大
                 val cellPxApprox = 1000f / result.width
@@ -207,11 +226,65 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
                             .padding(horizontal = Spacing.sm, vertical = 6.dp),
                     )
                 }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Spacing.md, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("简化标号", style = MaterialTheme.typography.labelMedium)
+                        Text(
+                            "同色区域只标外圈，内部留空",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = simplifiedLabels,
+                        onCheckedChange = { simplifiedLabels = it },
+                        enabled = showCodes,
+                    )
+                }
+                // 图纸镜像：直接改数据，导出与项目库缩略图同步更新
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = Spacing.sm, end = Spacing.xs, bottom = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "镜像",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { vm.flipPreview(horizontal = true) }) {
+                        Icon(
+                            MorphIcons.FlipHorizontal,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp),
+                        )
+                        Text("水平", modifier = Modifier.padding(start = 4.dp))
+                    }
+                    TextButton(onClick = { vm.flipPreview(horizontal = false) }) {
+                        Icon(
+                            MorphIcons.FlipVertical,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp),
+                        )
+                        Text("垂直", modifier = Modifier.padding(start = 4.dp))
+                    }
+                }
             }
         }
 
         // 统计条：三段等分，数字用 titleLarge，标签用 labelSmall
-        ShCard(modifier = Modifier.fillMaxWidth()) {
+        ShCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.md),
+        ) {
             Column {
                 Row(Modifier.padding(vertical = Spacing.sm)) {
                     Stat("$total", "总粒数", Modifier.weight(1f))
@@ -245,8 +318,12 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
             }
         }
 
-        SectionTitle("用量清单")
-        ShCard(modifier = Modifier.fillMaxWidth()) {
+        SectionTitle("用量清单", modifier = Modifier.padding(horizontal = Spacing.md))
+        ShCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.md),
+        ) {
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -290,8 +367,12 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
             }
         }
 
-        SectionTitle("导出")
-        ShCard(modifier = Modifier.fillMaxWidth()) {
+        SectionTitle("导出", modifier = Modifier.padding(horizontal = Spacing.md))
+        ShCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.md),
+        ) {
             Column(
                 modifier = Modifier.padding(Spacing.md),
                 verticalArrangement = Arrangement.spacedBy(Spacing.xs),
@@ -301,7 +382,10 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
                     Button(
                         onClick = {
                             runExport("PNG 图纸") {
-                                ExportService.exportPng(context, pages, projectName, symbol = false)
+                                ExportService.exportPng(
+                                    context, pages, projectName,
+                                    symbol = false, codeLabels = codeLabels,
+                                )
                             }
                         },
                         modifier = Modifier.weight(1f),
@@ -319,7 +403,9 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
                     OutlinedButton(
                         onClick = {
                             runExport("PDF 打印版") {
-                                ExportService.exportPdf(context, pages, projectName)
+                                ExportService.exportPdf(
+                                    context, pages, projectName, codeLabels,
+                                )
                             }
                         },
                         modifier = Modifier.weight(1f),
@@ -342,7 +428,7 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = Spacing.lg, top = Spacing.xxs),
+                .padding(start = Spacing.md, end = Spacing.md, bottom = Spacing.lg, top = Spacing.xxs),
             horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
         ) {
             if (vm.canAdjustParams) {
@@ -364,6 +450,69 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
                 modifier = Modifier.weight(1f),
             ) {
                 Text("开始拼")
+            }
+        }
+    }
+
+    // 全屏图纸：整张纸铺满屏幕，双指缩放看色号，返回键/右上角关闭
+    if (fullscreen) {
+        Dialog(
+            onDismissRequest = { fullscreen = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.surface,
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .systemBarsPadding(),
+                ) {
+                    PatternCanvas(
+                        result = currentPage,
+                        showCodes = showCodes,
+                        codeLabels = codeLabels,
+                    )
+                    IconButton(
+                        onClick = { fullscreen = false },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(Spacing.sm)
+                            .background(
+                                MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                                CircleShape,
+                            ),
+                    ) {
+                        Icon(MorphIcons.X, contentDescription = "退出全屏")
+                    }
+                    if (pages.size > 1) {
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = Spacing.lg)
+                                .background(
+                                    MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                                    RoundedCornerShape(20.dp),
+                                )
+                                .padding(horizontal = Spacing.sm),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            TextButton(
+                                onClick = { if (pageIdx > 0) pageIdx-- },
+                                enabled = pageIdx > 0,
+                            ) { Text("‹ 上一页") }
+                            Text(
+                                "${pageIdx + 1} / ${pages.size}",
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                            TextButton(
+                                onClick = { if (pageIdx < pages.size - 1) pageIdx++ },
+                                enabled = pageIdx < pages.size - 1,
+                            ) { Text("下一页 ›") }
+                        }
+                    }
+                }
             }
         }
     }

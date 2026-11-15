@@ -8,6 +8,7 @@ import android.graphics.Typeface
 import com.pindou.app.core.export.ExportService
 import com.pindou.app.core.palette.BeadPalette
 import com.pindou.app.core.pattern.PatternResult
+import com.pindou.app.core.pattern.CodeLabelMode
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -66,11 +67,12 @@ object StudioExport {
         palette: BeadPalette,
         projectName: String,
         symbol: Boolean = false,
+        codeLabels: CodeLabelMode = CodeLabelMode.OUTLINE,
     ): ExportService.Exported = runCatching {
         val results = engine.frames.indices.map { i ->
             PatternResult(engine.width, engine.height, engine.composite(i), palette, 0)
         }
-        ExportService.exportPng(context, results, projectName, symbol)
+        ExportService.exportPng(context, results, projectName, symbol, codeLabels)
     }.getOrElse { ExportService.Exported.Failed(it.message ?: "色号图导出失败") }
 
     fun exportPdf(
@@ -78,11 +80,12 @@ object StudioExport {
         engine: StudioEngine,
         palette: BeadPalette,
         projectName: String,
+        codeLabels: CodeLabelMode = CodeLabelMode.OUTLINE,
     ): ExportService.Exported = runCatching {
         val results = engine.frames.indices.map { i ->
             PatternResult(engine.width, engine.height, engine.composite(i), palette, 0)
         }
-        ExportService.exportPdf(context, results, projectName)
+        ExportService.exportPdf(context, results, projectName, codeLabels)
     }.getOrElse { ExportService.Exported.Failed(it.message ?: "PDF 导出失败") }
 
     /** 调色板 + 用量 PNG，方便对照买豆。 */

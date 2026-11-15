@@ -379,6 +379,28 @@ object MorphIcons {
         )
     }
 
+    val FlipVertical: ImageVector by lazy {
+        strokeIcon(
+            name = "FlipVertical",
+            "M3 8V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3",
+            "M3 16v3a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3",
+            "M20 12h2",
+            "M14 12h2",
+            "M8 12h2",
+            "M2 12h2",
+        )
+    }
+
+    val Expand: ImageVector by lazy {
+        strokeIcon(
+            name = "Expand",
+            "M8 3H5a2 2 0 0 0-2 2v3",
+            "M16 3h3a2 2 0 0 1 2 2v3",
+            "M8 21H5a2 2 0 0 1-2-2v-3",
+            "M16 21h3a2 2 0 0 0 2-2v-3",
+        )
+    }
+
 }
 
 private fun strokeIcon(name: String, vararg paths: String): ImageVector =

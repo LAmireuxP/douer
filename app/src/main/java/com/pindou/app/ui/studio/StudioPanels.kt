@@ -1280,7 +1280,13 @@ fun StudioExportPanel(
                     ) { Text("导出像素 PNG") }
                 }
                 1 -> {
-                    SectionLabel("图纸：单行标题 / 四边坐标 / 格内色号 / 底部用量条")
+                    SectionLabel("图纸：两行标题 / 四边坐标 / 格内色号 / 底部用量条")
+                    ToggleRow(
+                        "简化标号",
+                        "同色区域只在最外圈标色号，内部留空；关闭则每格都标",
+                        checked = session.simplifiedLabels,
+                        onCheckedChange = { session.simplifiedLabels = it },
+                    )
                     Text(
                         "每帧导出为一页，多帧会纵向拼成一张长图。",
                         style = MaterialTheme.typography.labelSmall,
@@ -1302,6 +1308,12 @@ fun StudioExportPanel(
                 }
                 2 -> {
                     SectionLabel("PDF 打印版")
+                    ToggleRow(
+                        "简化标号",
+                        "同色区域只在最外圈标色号，内部留空；关闭则每格都标",
+                        checked = session.simplifiedLabels,
+                        onCheckedChange = { session.simplifiedLabels = it },
+                    )
                     Text(
                         "A4 自动横竖排，每帧独立分页，格内保留色号。",
                         style = MaterialTheme.typography.labelSmall,

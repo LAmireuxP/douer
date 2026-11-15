@@ -34,12 +34,16 @@ object ExportRenderer {
         val titleHeightPx: Int = 0,
     )
 
-    private const val BG = 0xFFFAFAFA.toInt()          // 与 App 画布一致的 zinc-50
-    private const val GRID_LINE = 0x33000000          // 半透明黑
+    private const val BG = 0xFFFFFFFF.toInt()          // 白纸：打印不费墨，色块更干净
+    private const val GRID_LINE = 0x30000000          // 细网格：白底约 #B3B3B3
+    private const val GRID_MAJOR = 0xFF1A1A1A.toInt()  // 每 5 格一条主线
+    private const val FRAME = 0xFF1A1A1A.toInt()       // 图纸外框
     private const val TEXT_DARK = 0xFF333333.toInt()
     private const val TEXT_LIGHT = 0xFFF5F5F5.toInt()
-    private const val RULER_BG = 0xFFF1F1EB.toInt()
-    private const val RULER_LINE = 0xFF2A2A2A.toInt()
+    private const val RULER_BG = 0xFFFFFFFF.toInt()
+    private const val RULER_LINE = 0xFF1A1A1A.toInt()
+    /** 大格间隔：与画像素/识别网格的 5×5 大正方形保持一致 */
+    private const val MAJOR_EVERY = 5
 
     /** 坐标带宽度：随格子放大，但不小于 14px，避免数字挤成一团。 */
     fun rulerSizePx(cellPx: Int): Int = (cellPx * 0.5f).toInt().coerceIn(14, 40)
@@ -89,13 +93,30 @@ object ExportRenderer {
         }
 
         if (options.showGrid) {
+            // 细线先铺满，再用深色主线压出 5×5 大格；比所有线同色更容易数格
             for (gx in 0..result.width) {
+                if (gx % MAJOR_EVERY == 0) continue
                 val x = (ox + gx * cell).coerceAtMost(w - 1)
                 drawVLine(pixels, w, h, x, oy, GRID_LINE)
             }
             for (gy in 0..result.height) {
+                if (gy % MAJOR_EVERY == 0) continue
                 val y = (oy + gy * cell).coerceAtMost(h - 1)
                 drawHLine(pixels, w, h, y, GRID_LINE)
+            }
+            // 主线随格子加粗：120px 的大格上 1px 线打印出来会消失
+            val majorWidth = (cell / 48).coerceIn(1, 4)
+            for (gx in 0..result.width step MAJOR_EVERY) {
+                val x = (ox + gx * cell).coerceAtMost(w - 1)
+                for (t in 0 until majorWidth) {
+                    drawVLine(pixels, w, h, (x + t).coerceAtMost(w - 1), oy, GRID_MAJOR)
+                }
+            }
+            for (gy in 0..result.height step MAJOR_EVERY) {
+                val y = (oy + gy * cell).coerceAtMost(h - 1)
+                for (t in 0 until majorWidth) {
+                    drawHLine(pixels, w, h, (y + t).coerceAtMost(h - 1), GRID_MAJOR)
+                }
             }
         }
         if (ruler > 0) {
@@ -103,6 +124,16 @@ object ExportRenderer {
                 pixels, w, h, ox, oy, cell, result.width, result.height,
                 ruler, titleH, options.rowOffset,
             )
+        }
+        // 最外层双线框：参考图的「整张图纸」边界，裁切/打印时边界清楚
+        if (options.showGrid) {
+            val frameWidth = (cell / 40).coerceIn(2, 5)
+            for (inset in 0 until frameWidth) {
+                drawHLineRange(pixels, w, h, (titleH + inset).coerceAtMost(h - 1), 0, w, FRAME)
+                drawHLineRange(pixels, w, h, (h - 1 - inset).coerceAtLeast(0), 0, w, FRAME)
+                drawVLineRange(pixels, w, h, inset.coerceAtMost(w - 1), titleH, h, FRAME)
+                drawVLineRange(pixels, w, h, (w - 1 - inset).coerceAtLeast(0), titleH, h, FRAME)
+            }
         }
         return RenderedBitmap(w, h, pixels)
     }
@@ -233,11 +264,8 @@ object ExportRenderer {
         drawVLineRange(p, w, h, contentRight, titleH, contentBottom + ruler, RULER_LINE)
         drawHLineRange(p, w, h, contentBottom, 0, w, RULER_LINE)
 
-        val step = when {
-            cell >= 32 -> 1
-            cell >= 18 -> 5
-            else -> 10
-        }
+        // 参考图逐格标号；格子 ≥14px 时两位数仍放得下，就不再抽稀
+        val step = if (cell >= 14) 1 else if (cell >= 8) 5 else 10
         val scale = (ruler * 0.55f / 7f).toInt().coerceIn(1, 3)
         val glyphH = 7 * scale
         for (gx in 0 until cols step step) {

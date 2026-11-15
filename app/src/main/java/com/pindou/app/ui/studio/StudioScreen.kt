@@ -52,6 +52,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.pindou.app.core.pattern.CodeLabelMode
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -567,7 +568,11 @@ fun StudioScreen(vm: AppViewModel) {
             },
             onExportCode = {
                 runExport("色号图") {
-                    StudioExport.exportCodeChart(context, engine, palette, session.name, symbol = false)
+                    StudioExport.exportCodeChart(
+                        context, engine, palette, session.name,
+                        symbol = false,
+                        codeLabels = if (session.simplifiedLabels) CodeLabelMode.OUTLINE else CodeLabelMode.FULL,
+                    )
                 }
             },
             onExportSymbol = {
@@ -577,7 +582,10 @@ fun StudioScreen(vm: AppViewModel) {
             },
             onExportPdf = {
                 runExport("PDF") {
-                    StudioExport.exportPdf(context, engine, palette, session.name)
+                    StudioExport.exportPdf(
+                        context, engine, palette, session.name,
+                        codeLabels = if (session.simplifiedLabels) CodeLabelMode.OUTLINE else CodeLabelMode.FULL,
+                    )
                 }
             },
             onExportPalette = {

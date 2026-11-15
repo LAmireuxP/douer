@@ -70,6 +70,7 @@ class ProjectRepository(private val context: Context) {
         locked: BooleanArray,
         palette: BeadPalette,
         pages: Int = 1,
+        resetProgress: Boolean = false,
     ) = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         // cells 为多页平铺数据时，缩略图只渲染第 1 页
@@ -81,7 +82,7 @@ class ProjectRepository(private val context: Context) {
         dao.updateCells(
             id, width, height,
             GridCodec.encodeCells(cells), GridCodec.encodeLocks(locked),
-            pages, thumb, now,
+            pages, thumb, now, resetProgress,
         )
         // 旧缩略图清理（新图已生成时）
         if (thumb != null && old != null && old != thumb) {

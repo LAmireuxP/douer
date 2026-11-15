@@ -16,6 +16,8 @@ import android.os.Environment
 import android.provider.MediaStore
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import com.pindou.app.core.pattern.CodeLabelMode
+import com.pindou.app.core.pattern.ColorLabelLayout
 import com.pindou.app.core.pattern.PatternResult
 import java.io.File
 import java.io.FileOutputStream
@@ -37,6 +39,7 @@ object ExportService {
         results: List<PatternResult>,
         projectName: String,
         symbol: Boolean = false,
+        codeLabels: CodeLabelMode = CodeLabelMode.FULL,
     ): Exported = runCatching {
         require(results.isNotEmpty()) { "无页数据" }
         // 每页独立渲染（含标题栏），纵向拼接成一张长图
@@ -71,10 +74,14 @@ object ExportService {
                 drawSymbolLabels(bmp, r, cellPx, ExportRenderer.rulerSizePx(cellPx))
                 bmp
             } else {
-                drawCompactHeader(bmp, titleHeight, projectName, r)
+                drawCompactHeader(
+                    bmp, titleHeight, projectName, r,
+                    ExportRenderer.rulerSizePx(cellPx), cellPx,
+                )
                 drawCellCodes(
                     bmp, r, cellPx, titleHeight,
                     ExportRenderer.rulerSizePx(cellPx),
+                    codeLabels,
                 )
                 addLegend(bmp, r, cellPx)
             }
@@ -105,7 +112,8 @@ object ExportService {
         result: PatternResult,
         projectName: String,
         symbol: Boolean = false,
-    ): Exported = exportPng(context, listOf(result), projectName, symbol)
+        codeLabels: CodeLabelMode = CodeLabelMode.FULL,
+    ): Exported = exportPng(context, listOf(result), projectName, symbol, codeLabels)
 
     /** 导出 .bpat 图纸文件（通用交换格式） */
     fun exportBpat(
@@ -253,13 +261,15 @@ object ExportService {
         context: Context,
         result: PatternResult,
         projectName: String,
-    ): Exported = exportPdf(context, listOf(result), projectName)
+        codeLabels: CodeLabelMode = CodeLabelMode.FULL,
+    ): Exported = exportPdf(context, listOf(result), projectName, codeLabels)
 
     /** 多页 PDF：每页图纸独立渲染切分，末尾附聚合清单页 */
     fun exportPdf(
         context: Context,
         results: List<PatternResult>,
         projectName: String,
+        codeLabels: CodeLabelMode = CodeLabelMode.FULL,
     ): Exported = runCatching {
         require(results.isNotEmpty()) { "无页数据" }
 
@@ -347,8 +357,8 @@ object ExportService {
                         ),
                     )
                     .toBitmap()
-                drawCompactHeader(patternBmp, titleHeight, projectName, r)
-                drawCellCodes(patternBmp, slice, cellPx, titleHeight, ruler)
+                drawCompactHeader(patternBmp, titleHeight, projectName, r, ruler, cellPx)
+                drawCellCodes(patternBmp, slice, cellPx, titleHeight, ruler, codeLabels)
                 val pageBmp = if (sheet == sheetCount - 1) {
                     addLegend(patternBmp, r, cellPx)
                 } else {
@@ -362,7 +372,8 @@ object ExportService {
                 val destW = contentW * scale
                 val destH = contentH * scale
                 val left = margin + (usableW - destW) / 2f
-                val top = margin
+                // 单页放得下时上下居中，避免图纸全挤在纸面上半部分
+                val top = margin + (usableH - destH) / 2f
                 val page = doc.startPage(PdfDocument.PageInfo.Builder(pageW, pageH, docPageIndex + 1).create())
                 val c: Canvas = page.canvas
                 c.drawBitmap(
@@ -389,7 +400,7 @@ object ExportService {
     }.getOrElse { Exported.Failed(it.message ?: "PDF 导出失败") }
 
     /**
-     * 单行标题：项目名 + [宽×高/色数/总颗数]，居中。
+     * 两行标题：粗体项目名 + 尺寸/色数/颗数副标题，左对齐。
      * 点阵字体没有中文字形，所以这里用系统字体在预留高度里绘制。
      */
     private fun drawCompactHeader(
@@ -397,34 +408,51 @@ object ExportService {
         titleHeight: Int,
         projectName: String,
         r: PatternResult,
+        ruler: Int,
+        cell: Int,
     ) {
         if (titleHeight <= 0) return
         val canvas = Canvas(bitmap)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.parseColor("#171717")
+        val left = ruler + cell * 0.35f
+        val maxWidth = bitmap.width - left - ruler
+        val title = projectName.ifBlank { "拼豆图纸" }
+        val subtitle = "${r.width}×${r.height}/${r.usage().size}色/共" +
+            "${r.cells.count { it >= 0 }}颗"
+
+        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
+            color = 0xFF111111.toInt()
             isFakeBoldText = true
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            textAlign = Paint.Align.CENTER
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            textAlign = Paint.Align.LEFT
         }
-        val text = "$projectName [${r.width}×${r.height}/${r.usage().size}色/共" +
-            "${r.cells.count { it >= 0 }}颗]"
-        var size = (titleHeight * 0.55f).coerceAtLeast(16f)
-        paint.textSize = size
-        val maxWidth = bitmap.width - titleHeight * 0.5f
-        while (size > 10f && paint.measureText(text) > maxWidth) {
-            size *= 0.94f
-            paint.textSize = size
+        var titleSize = (titleHeight * 0.42f).coerceAtLeast(13f)
+        titlePaint.textSize = titleSize
+        while (titleSize > 10f && titlePaint.measureText(title) > maxWidth) {
+            titleSize *= 0.94f
+            titlePaint.textSize = titleSize
         }
-        val baseline = titleHeight / 2f - (paint.ascent() + paint.descent()) / 2f
-        canvas.drawText(text, bitmap.width / 2f, baseline, paint)
+        val titleBaseline = titleHeight * 0.20f - titlePaint.ascent()
+        canvas.drawText(title, left, titleBaseline, titlePaint)
+
+        val subPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
+            color = 0xFF666666.toInt()
+            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+            textAlign = Paint.Align.LEFT
+            textSize = (titleHeight * 0.21f).coerceAtLeast(10f)
+        }
+        while (subPaint.textSize > 9f && subPaint.measureText(subtitle) > maxWidth) {
+            subPaint.textSize *= 0.94f
+        }
+        canvas.drawText(subtitle, left, titleHeight * 0.90f, subPaint)
     }
 
-    /** 底部用量条：6 列，色块 + 色号 + 颗数，和参考图一致。 */
+    /** 底部用量条：白底黑框，色块 + 色号 + 颗数；颜色少时 4 列更接近参考图。 */
     private fun legendHeightPx(colorCount: Int, cellPx: Int): Int {
         if (colorCount <= 0) return 0
         val rowH = cellPx.coerceIn(32, 120)
-        val rows = (colorCount + LEGEND_COLUMNS - 1) / LEGEND_COLUMNS
-        return rows * rowH + rowH / 2
+        val cols = legendColumns(colorCount)
+        val rows = (colorCount + cols - 1) / cols
+        return rows * rowH + (rowH * 0.6f).toInt()
     }
 
     private fun addLegend(source: Bitmap, r: PatternResult, cellPx: Int): Bitmap {
@@ -434,57 +462,86 @@ object ExportService {
         val legendH = legendHeightPx(usage.size, cellPx)
         val out = Bitmap.createBitmap(source.width, source.height + legendH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(out)
-        canvas.drawColor(0xFFFAFAFA.toInt())
+        canvas.drawColor(0xFFFFFFFF.toInt())
         canvas.drawBitmap(source, 0f, 0f, null)
 
         val top = source.height.toFloat()
         val line = Paint().apply {
-            color = 0x22000000
-            strokeWidth = 1f
+            color = 0xFF1A1A1A.toInt()
+            strokeWidth = 1.2f
         }
         canvas.drawLine(0f, top, out.width.toFloat(), top, line)
 
-        val entryW = out.width.toFloat() / LEGEND_COLUMNS
-        val text = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
-            color = 0xFF333333.toInt()
-            textSize = rowH * 0.55f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        val cols = legendColumns(usage.size)
+        val entryW = out.width.toFloat() / cols
+        val codePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
+            color = 0xFF111111.toInt()
+            textSize = rowH * 0.36f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            isFakeBoldText = true
         }
-        val swatch = rowH * 0.58f
+        val countPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
+            color = 0xFF666666.toInt()
+            textSize = rowH * 0.32f
+            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+        }
+        val border = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF1A1A1A.toInt()
+            style = Paint.Style.STROKE
+            strokeWidth = 1.4f
+        }
+        val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() }
         usage.forEachIndexed { i, (idx, count) ->
             val entry = r.palette.colors.getOrNull(idx) ?: return@forEachIndexed
-            val col = i % LEGEND_COLUMNS
-            val row = i / LEGEND_COLUMNS
-            val left = col * entryW + entryW * 0.06f
-            val cy = top + rowH * 0.25f + row * rowH + rowH * 0.5f
-            val rect = android.graphics.RectF(
-                left,
-                cy - swatch / 2f,
-                left + swatch,
-                cy + swatch / 2f,
+            val col = i % cols
+            val row = i / cols
+            val pad = entryW * 0.07f
+            val left = col * entryW + pad
+            val right = (col + 1) * entryW - pad
+            val chipTop = top + rowH * 0.15f + row * rowH
+            val chipBottom = chipTop + rowH * 0.70f
+            val chip = android.graphics.RectF(left, chipTop, right, chipBottom)
+            val radius = rowH * 0.10f
+            canvas.drawRoundRect(chip, radius, radius, white)
+            canvas.drawRoundRect(chip, radius, radius, border)
+
+            val swatch = rowH * 0.34f
+            val swatchLeft = left + rowH * 0.12f
+            val swatchTop = (chipTop + chipBottom) / 2f - swatch / 2f
+            val swatchRect = android.graphics.RectF(
+                swatchLeft, swatchTop, swatchLeft + swatch, swatchTop + swatch,
             )
             canvas.drawRoundRect(
-                rect,
+                swatchRect,
                 3f,
                 3f,
                 Paint(Paint.ANTI_ALIAS_FLAG).apply { color = entry.argb },
             )
             canvas.drawRoundRect(
-                rect,
+                swatchRect,
                 3f,
                 3f,
                 Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = 0x33000000
+                    color = 0x40000000
                     style = Paint.Style.STROKE
                     strokeWidth = 1f
                 },
             )
-            val baseline = cy - (text.ascent() + text.descent()) / 2f
+            val textLeft = swatchLeft + swatch + rowH * 0.12f
+            val baseline = (chipTop + chipBottom) / 2f -
+                (codePaint.ascent() + codePaint.descent()) / 2f
             canvas.drawText(
-                "${entry.code} $count",
-                left + swatch + rowH * 0.2f,
+                entry.code,
+                textLeft,
                 baseline,
-                text,
+                codePaint,
+            )
+            val codeWidth = codePaint.measureText(entry.code)
+            canvas.drawText(
+                count.toString(),
+                textLeft + codeWidth + rowH * 0.10f,
+                baseline,
+                countPaint,
             )
         }
         source.recycle()
@@ -502,9 +559,15 @@ object ExportService {
         cell: Int,
         titleHeight: Int,
         ruler: Int,
+        codeLabels: CodeLabelMode,
     ) {
         if (cell < 16) return
         val canvas = Canvas(bitmap)
+        val outline = if (codeLabels == CodeLabelMode.OUTLINE) {
+            ColorLabelLayout.labelMaskOutline(r.cells, r.width, r.height)
+        } else {
+            null
+        }
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             textAlign = Paint.Align.CENTER
@@ -517,6 +580,7 @@ object ExportService {
             for (gx in 0 until r.width) {
                 val idx = r.cells[gy * r.width + gx]
                 if (idx < 0) continue
+                if (outline != null && !outline[gy * r.width + gx]) continue
                 val color = r.palette.colors[idx]
                 paint.textSize = baseSize
                 val measured = paint.measureText(color.code)
@@ -703,11 +767,12 @@ object ExportService {
         return cell
     }
 
-    private fun titleBarHeight(cell: Int): Int = (cell * 1.3f).toInt().coerceAtLeast(32)
+    private fun titleBarHeight(cell: Int): Int = (cell * 2.0f).toInt().coerceAtLeast(48)
 
     private data class PagePlan(val rowsPerPage: Int, val pages: Int, val cellPt: Float)
 
-    private const val LEGEND_COLUMNS = 6
+    /** 参考图 4 列；颜色多时 6 列，避免图例比图纸还高 */
+    private fun legendColumns(colorCount: Int): Int = if (colorCount <= 12) 4 else 6
     /** PNG 总像素上限；largeHeap 下 32M 像素 ≈ 128MB/份，单页峰值约 256MB。 */
     private const val MAX_PNG_PIXELS = 32_000_000L
     /** PDF 单张位图上限：25M 像素 ≈ 100MB/张，渲染 + Bitmap 两份约 200MB。 */

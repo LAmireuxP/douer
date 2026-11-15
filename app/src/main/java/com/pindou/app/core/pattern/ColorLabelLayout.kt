@@ -8,6 +8,33 @@ package com.pindou.app.core.pattern
  */
 object ColorLabelLayout {
 
+    /**
+     * 简化标号：只标同色连通区域的外圈，内部留空。
+     *
+     * 判据是 4 邻域里只要有一个格子越界或颜色不同，该格就在区域边界上。
+     * 单格区域、2 格宽的长条等所有格子都是边界，会全部保留标号。
+     */
+    fun labelMaskOutline(cells: IntArray, width: Int, height: Int): BooleanArray {
+        val total = width.coerceAtLeast(0) * height.coerceAtLeast(0)
+        if (width <= 0 || height <= 0 || cells.size < total) {
+            return BooleanArray(total) { false }
+        }
+        val mask = BooleanArray(total)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val index = y * width + x
+                val color = cells[index]
+                if (color < 0) continue
+                val leftDiff = x == 0 || cells[index - 1] != color
+                val rightDiff = x + 1 == width || cells[index + 1] != color
+                val topDiff = y == 0 || cells[index - width] != color
+                val bottomDiff = y + 1 == height || cells[index + width] != color
+                if (leftDiff || rightDiff || topDiff || bottomDiff) mask[index] = true
+            }
+        }
+        return mask
+    }
+
     fun labelMask(cells: IntArray, width: Int, height: Int): BooleanArray {
         val total = width.coerceAtLeast(0) * height.coerceAtLeast(0)
         if (width <= 0 || height <= 0 || cells.size < total) {
@@ -88,4 +115,10 @@ object ColorLabelLayout {
         }
         return mask
     }
+}
+
+/** 色号标注模式：每格都标，或只在同色区域外圈标。 */
+enum class CodeLabelMode {
+    FULL,
+    OUTLINE,
 }

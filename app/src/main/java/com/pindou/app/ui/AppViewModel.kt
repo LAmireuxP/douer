@@ -36,6 +36,7 @@ import com.pindou.app.core.pattern.AutoTuner
 import com.pindou.app.core.pattern.FilterLevel
 import com.pindou.app.core.pattern.PatternGenerator
 import com.pindou.app.core.pattern.PatternResult
+import com.pindou.app.core.pattern.PatternTransform
 import com.pindou.app.core.pattern.PixelCalibration
 import com.pindou.app.core.pattern.PixelArtDetector
 import com.pindou.app.core.pattern.PixelGridInspector
@@ -2639,6 +2640,61 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun flipEditorVertical() {
         if (editor?.flipVertical() == true) notifyEditorChanged()
+    }
+
+    /**
+     * 图纸预览页的镜像：直接重排当前所有页并立即落库。
+     *
+     * 预览页没有撤销栈，用「再点一次还原」的往返操作兜底；翻转会改变每格
+     * 语义，旧的施工进度必须作废，否则勾选记录会停在镜像前的位置。
+     */
+    fun flipPreview(horizontal: Boolean) {
+        val current = (genState as? GenState.Done)?.result ?: return
+        if (horizontal && current.width < 2) return
+        if (!horizontal && current.height < 2) return
+        val pages = projectPages.ifEmpty { listOf(current.cells) }
+        val mirrored = pages.map { page ->
+            if (horizontal) {
+                PatternTransform.mirrorHorizontal(page, current.width, current.height)
+            } else {
+                PatternTransform.mirrorVertical(page, current.width, current.height)
+            }
+        }
+        projectPages = mirrored
+        genState = GenState.Done(current.copy(cells = mirrored.first()))
+        toast = if (horizontal) "已水平镜像，再点一次还原" else "已垂直镜像，再点一次还原"
+
+        val id = currentProjectId ?: return
+        val pageSize = current.width * current.height
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val entity = repository.get(id)
+                val locks = entity?.locked
+                    ?.let { GridCodec.decodeLocks(it) }
+                    ?.takeIf { it.size == pageSize * pages.size }
+                    ?: BooleanArray(pageSize * pages.size)
+                val flatLocks = mirrored.indices
+                    .map { index ->
+                        val slice = locks.copyOfRange(index * pageSize, (index + 1) * pageSize)
+                        if (horizontal) {
+                            PatternTransform.mirrorHorizontal(slice, current.width, current.height)
+                        } else {
+                            PatternTransform.mirrorVertical(slice, current.width, current.height)
+                        }
+                    }
+                    .reduce { acc, next -> acc + next }
+                val flat = mirrored.reduce { acc, next -> acc + next }
+                repository.updateCells(
+                    id, current.width, current.height, flat, flatLocks,
+                    selectedPalette ?: current.palette, mirrored.size,
+                    resetProgress = true,
+                )
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    lastError = "镜像保存失败：${e.message ?: e.javaClass.simpleName}"
+                }
+            }
+        }
     }
 
     fun rotateEditor(clockwise: Boolean) {

@@ -17,6 +17,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -25,14 +26,15 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import com.pindou.app.core.pattern.PatternResult
 import com.pindou.app.core.pattern.ColorLabelLayout
+import com.pindou.app.core.pattern.CodeLabelMode
 import com.pindou.app.ui.CellCodeDrawer.drawCellCode
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 
 /** 空格底色（棋盘浅灰蓝，与 Hairline 同色温） */
-private val EmptyCellA = Color(0xFFEFF3F9)
-private val EmptyCellB = Color(0xFFE4EAF2)
+private val EmptyCellA = Color(0xFFF7F9FC)
+private val EmptyCellB = Color(0xFFEDF1F7)
 
 /** 预览画布的缩放/平移状态（换图纸时重建） */
 private class PreviewTransform {
@@ -104,14 +106,19 @@ private fun clampPreview(
 fun PatternCanvas(
     result: PatternResult,
     showCodes: Boolean,
+    codeLabels: CodeLabelMode = CodeLabelMode.FULL,
     modifier: Modifier = Modifier,
     cellMinPxForCodes: Float = CellCodeDrawer.MIN_CELL_PX,
 ) {
     val measurer = rememberTextMeasurer()
     val layoutCache = remember { mutableMapOf<Pair<String, Int>, TextLayoutResult>() }
     val transform = remember(result) { PreviewTransform() }
-    val labels = remember(result) {
-        ColorLabelLayout.labelMask(result.cells, result.width, result.height)
+    val labels = remember(result, codeLabels) {
+        when (codeLabels) {
+            CodeLabelMode.FULL -> null
+            CodeLabelMode.OUTLINE ->
+                ColorLabelLayout.labelMaskOutline(result.cells, result.width, result.height)
+        }
     }
     val gutter = with(LocalDensity.current) { GridRuler.GUTTER_DP.dp.toPx() }
     val rulerCache = remember { mutableMapOf<Pair<String, Int>, TextLayoutResult>() }
@@ -231,21 +238,41 @@ fun PatternCanvas(
                 )
             }
         }
-        val line = Color.Black.copy(alpha = 0.12f)
+        val line = Color.Black.copy(alpha = 0.10f)
+        val major = Color.Black.copy(alpha = 0.34f)
         for (i in firstX..lastX + 1) {
             val px = origin.x + i * cell
-            drawLine(line, Offset(px, origin.y + firstY * cell), Offset(px, origin.y + (lastY + 1) * cell), 1f)
+            val isMajor = i % 5 == 0
+            drawLine(
+                if (isMajor) major else line,
+                Offset(px, origin.y + firstY * cell),
+                Offset(px, origin.y + (lastY + 1) * cell),
+                if (isMajor) 1.4f else 1f,
+            )
         }
         for (i in firstY..lastY + 1) {
             val py = origin.y + i * cell
-            drawLine(line, Offset(origin.x + firstX * cell, py), Offset(origin.x + (lastX + 1) * cell, py), 1f)
+            val isMajor = i % 5 == 0
+            drawLine(
+                if (isMajor) major else line,
+                Offset(origin.x + firstX * cell, py),
+                Offset(origin.x + (lastX + 1) * cell, py),
+                if (isMajor) 1.4f else 1f,
+            )
         }
+        // 图纸外框：和导出图一致，边界不靠坐标带猜
+        drawRect(
+            color = Color.Black.copy(alpha = 0.55f),
+            topLeft = origin,
+            size = Size(cell * result.width, cell * result.height),
+            style = Stroke(width = 1.2f),
+        )
         if (showCodes && cell >= cellMinPxForCodes) {
             for (y in firstY..lastY) {
                 for (x in firstX..lastX) {
                     val idx = result.cells[y * result.width + x]
                     if (idx < 0) continue
-                    if (!labels[y * result.width + x]) continue
+                    if (labels != null && !labels[y * result.width + x]) continue
                     val entry = result.palette.colors.getOrNull(idx) ?: continue
                     drawCellCode(
                         measurer = measurer,

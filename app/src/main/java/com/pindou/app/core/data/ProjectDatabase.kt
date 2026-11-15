@@ -87,8 +87,10 @@ interface ProjectDao {
     @Query(
         "UPDATE projects SET width = :width, height = :height, cells = :cells, " +
             "locked = :locked, pages = :pages, thumbnailPath = :thumb, " +
-            "doneCells = CASE WHEN width = :width AND height = :height THEN doneCells ELSE NULL END, " +
-            "buildCursor = CASE WHEN width = :width AND height = :height THEN buildCursor ELSE 0 END, " +
+            "doneCells = CASE WHEN :resetProgress = 0 AND width = :width AND height = :height " +
+            "THEN doneCells ELSE NULL END, " +
+            "buildCursor = CASE WHEN :resetProgress = 0 AND width = :width AND height = :height " +
+            "THEN buildCursor ELSE 0 END, " +
             "updatedAt = :now WHERE id = :id",
     )
     suspend fun updateCells(
@@ -100,6 +102,7 @@ interface ProjectDao {
         pages: Int,
         thumb: String?,
         now: Long,
+        resetProgress: Boolean,
     )
 
     /** 修复旧项目元数据：格子 BLOB 不变，只纠正宽高。 */
