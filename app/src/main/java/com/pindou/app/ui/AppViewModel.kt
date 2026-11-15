@@ -2001,6 +2001,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun markStudioTutorialSeen() {
+        if (settings.studioTutorialSeen == true) return
+        settings = settings.copy(studioTutorialSeen = true)
+        viewModelScope.launch { settingsStore.setStudioTutorialSeen(true) }
+    }
+
     fun resetStudioRailPositions() {
         val session = studio ?: return
         session.resetRailPositions()

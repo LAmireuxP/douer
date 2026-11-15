@@ -99,6 +99,7 @@ fun StudioScreen(vm: AppViewModel) {
     var flattenDialog by remember { mutableStateOf(false) }
     var textOrigin by remember { mutableIntStateOf(-1) }
     var moreMenu by remember { mutableStateOf(false) }
+    var tutorialStep by remember { mutableIntStateOf(-1) }
     var exportMsg by remember { mutableStateOf<String?>(null) }
     var pdfPreview by remember { mutableStateOf<ExportService.Exported.FileReady?>(null) }
     var pendingExport by remember { mutableStateOf<Pair<String, () -> ExportService.Exported?>?>(null) }
@@ -145,6 +146,12 @@ fun StudioScreen(vm: AppViewModel) {
 
     LaunchedEffect(engine.width, engine.height) {
         canvasState.reset()
+    }
+
+    LaunchedEffect(vm.settings.studioTutorialSeen) {
+        if (vm.settings.studioTutorialSeen == null && tutorialStep < 0) {
+            tutorialStep = 0
+        }
     }
 
     // 动画预览：按每帧停留时间切帧；面板关掉也继续播放
@@ -234,6 +241,10 @@ fun StudioScreen(vm: AppViewModel) {
                     DropdownMenuItem(
                         text = { Text("导出…") },
                         onClick = { moreMenu = false; panel = StudioPanel.EXPORT },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("新手教程") },
+                        onClick = { moreMenu = false; tutorialStep = 0 },
                     )
                     DropdownMenuItem(
                         text = { Text("画布设置…") },
@@ -620,6 +631,17 @@ fun StudioScreen(vm: AppViewModel) {
             onConfirm = {
                 flattenDialog = false
                 vm.flattenStudioToEditor()
+            },
+        )
+    }
+
+    if (tutorialStep >= 0) {
+        StudioTutorialDialog(
+            step = tutorialStep,
+            onStepChange = { tutorialStep = it },
+            onDismiss = {
+                tutorialStep = -1
+                vm.markStudioTutorialSeen()
             },
         )
     }

@@ -31,6 +31,7 @@ class SettingsStore(private val context: Context) {
         val STUDIO_COLOR_Y = floatPreferencesKey("studio_color_y")
         val STUDIO_TOOL_COLLAPSED = booleanPreferencesKey("studio_tool_collapsed")
         val STUDIO_COLOR_COLLAPSED = booleanPreferencesKey("studio_color_collapsed")
+        val STUDIO_TUTORIAL_SEEN = booleanPreferencesKey("studio_tutorial_seen")
 
         // 统计只在“新建项目落库”时累加，重新生成/改参数不会重复计数。
         val STAT_TOTAL = intPreferencesKey("stat_total")
@@ -93,6 +94,8 @@ class SettingsStore(private val context: Context) {
         val studioColorY: Float = -1f,
         val studioToolCollapsed: Boolean = false,
         val studioColorCollapsed: Boolean = false,
+        /** null = 从未记录，首次进入画像素时展示教程。 */
+        val studioTutorialSeen: Boolean? = null,
     )
 
     val flow: Flow<Snapshot> = context.dataStore.data.map { p -> p.toSnapshot() }
@@ -112,6 +115,7 @@ class SettingsStore(private val context: Context) {
         studioColorY = this[STUDIO_COLOR_Y] ?: -1f,
         studioToolCollapsed = this[STUDIO_TOOL_COLLAPSED] ?: false,
         studioColorCollapsed = this[STUDIO_COLOR_COLLAPSED] ?: false,
+        studioTutorialSeen = this[STUDIO_TUTORIAL_SEEN],
     )
 
     private fun Preferences.toStats() = Stats(
@@ -152,6 +156,9 @@ class SettingsStore(private val context: Context) {
             it[STUDIO_TOOL_COLLAPSED] = toolCollapsed
             it[STUDIO_COLOR_COLLAPSED] = colorCollapsed
         }
+
+    suspend fun setStudioTutorialSeen(seen: Boolean) =
+        context.dataStore.edit { it[STUDIO_TUTORIAL_SEEN] = seen }
 
     /**
      * 记录一次“新图纸落库”。
