@@ -150,7 +150,7 @@ interface ProjectDao {
     suspend fun delete(id: Long)
 }
 
-@Database(entities = [ProjectEntity::class], version = 4, exportSchema = false)
+@Database(entities = [ProjectEntity::class], version = 4, exportSchema = true)
 abstract class PindouDatabase : RoomDatabase() {
     abstract fun projectDao(): ProjectDao
 

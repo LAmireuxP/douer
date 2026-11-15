@@ -60,6 +60,10 @@ object UpdateClient {
         destDir.listFiles()?.forEach { runCatching { it.delete() } }
         val target = File(destDir, "douer-${info.versionName}.apk")
         val temp = File(destDir, "${target.name}.part")
+        val expectedSha = info.sha256
+            ?.trim()
+            ?.takeIf { it.length == 64 }
+            ?: throw IllegalStateException("该更新源未提供 SHA-256 校验值，请到发布页手动下载")
         var lastError = "下载失败"
 
         for (url in UpdateManifest.downloadCandidates(info)) {
@@ -95,7 +99,7 @@ object UpdateClient {
                 val actualSha = digest.digest().joinToString("") {
                     String.format(Locale.US, "%02x", it)
                 }
-                if (info.sha256 != null && !actualSha.equals(info.sha256, ignoreCase = true)) {
+                if (!actualSha.equals(expectedSha, ignoreCase = true)) {
                     lastError = "更新包校验失败"
                     temp.delete()
                     continue

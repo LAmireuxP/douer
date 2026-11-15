@@ -84,6 +84,7 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.haze)
     implementation(libs.mlkit.subject.segmentation)
+    implementation(libs.androidx.exifinterface)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
@@ -91,4 +92,9 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     debugImplementation(libs.compose.ui.tooling)
     testImplementation(libs.junit)
+}
+
+ksp {
+    // Room 迁移快照入库；后续加列可在 androidTest 用 MigrationTestHelper 校验。
+    arg("room.schemaLocation", "$projectDir/schemas")
 }

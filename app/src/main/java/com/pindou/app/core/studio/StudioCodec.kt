@@ -22,6 +22,7 @@ object StudioCodec {
     private const val MAX_FRAMES = 240
     private const val MAX_LAYERS = 64
     private const val MAX_SIDE = 512
+    private const val MAX_REFERENCE_SIDE = 1280
 
     fun save(engine: StudioEngine, file: File): Boolean = runCatching {
         file.parentFile?.mkdirs()
@@ -90,7 +91,7 @@ object StudioCodec {
                 val reference = if (version >= 2 && input.readBoolean()) {
                     val refW = input.readInt()
                     val refH = input.readInt()
-                    if (refW !in 1..MAX_SIDE * 4 || refH !in 1..MAX_SIDE * 4) return null
+                    if (refW !in 1..MAX_REFERENCE_SIDE || refH !in 1..MAX_REFERENCE_SIDE) return null
                     val refVisible = input.readBoolean()
                     val pixels = IntArray(refW * refH) { input.readInt() }
                     StudioReference(refW, refH, pixels, refVisible)

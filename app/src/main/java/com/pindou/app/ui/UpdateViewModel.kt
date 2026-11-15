@@ -76,6 +76,10 @@ class UpdateViewModel(app: Application) : AndroidViewModel(app) {
     fun download() {
         val available = state as? State.Available ?: return
         if (downloadJob?.isActive == true) return
+        if (available.info.sha256.isNullOrBlank()) {
+            state = State.Error("该更新源未提供 SHA-256 校验值，请到发布页手动下载")
+            return
+        }
         state = State.Downloading(0f)
         downloadJob = viewModelScope.launch {
             try {

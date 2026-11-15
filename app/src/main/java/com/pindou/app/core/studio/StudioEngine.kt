@@ -1410,7 +1410,11 @@ class StudioEngine(
         val frames: List<StudioFrame>,
         val frameIndex: Int,
     ) {
-        val bytes: Int get() = frames.sumOf { f -> f.layers.sumOf { it.cells.size * 4 + 128 } + 64 }
+        val bytes: Int get() = frames.sumOf { f ->
+            f.layers.sumOf { it.cells.size * 4 + 128 } +
+                (f.reference?.argb?.size ?: 0) * 4 +
+                64
+        }
     }
 
     private fun snapshot(): Snapshot = Snapshot(
