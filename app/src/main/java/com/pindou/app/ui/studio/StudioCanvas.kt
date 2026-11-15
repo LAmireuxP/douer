@@ -270,7 +270,9 @@ fun StudioCanvas(
                             if (pressed.size >= 2) {
                                 if (!transforming) {
                                     transforming = true
-                                    stroke?.let { engine.endStroke(it); session.touch() }
+                                    // 双指落下前可能已经有一小段单指轨迹。这里撤销未提交
+                                    // 的笔画，而不是提交它，避免缩放时在画布上留下误触墨迹。
+                                    stroke?.let { engine.cancelStroke(it) }
                                     stroke = null
                                 }
                                 val a = pressed[0].position
@@ -289,7 +291,7 @@ fun StudioCanvas(
                                 }
                                 prevDist = dist
                                 prevCentroid = centroid
-                            } else if (pressed.size == 1) {
+                            } else if (pressed.size == 1 && !transforming) {
                                 val pos = pressed[0].position
                                 val total = hypot(
                                     (pos.x - start.x).toDouble(),
@@ -367,6 +369,18 @@ fun StudioCanvas(
                             }
                             event.changes.forEach { if (it.positionChanged()) it.consume() }
                             if (pressed.isEmpty()) {
+                                if (transforming) {
+                                    // 一次双指手势结束后必须全部抬手再开始新笔画，
+                                    // 不能把缩放末尾的单指当成画笔/选区操作。
+                                    dragStart = null
+                                    dragEnd = null
+                                    lassoPoints = emptyList()
+                                    gradientFrom = null
+                                    gradientTo = null
+                                    moving = false
+                                    movePreview = Offset.Zero
+                                    break
+                                }
                                 val endCell = cellAt(last, canvas, state, engine)
                                 when (session.tool) {
                                     StudioTool.BRUSH, StudioTool.ERASER -> {

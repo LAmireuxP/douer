@@ -68,6 +68,22 @@ class StudioEngineTest {
     }
 
     @Test
+    fun `取消未提交笔画会恢复原格`() {
+        val e = engine()
+        e.setCell(0, 2)
+        val stroke = e.beginStroke()
+        stroke.setCell(0, 3)
+        assertEquals(3, e.activeLayer.cells[0])
+
+        e.cancelStroke(stroke)
+
+        assertEquals(2, e.activeLayer.cells[0])
+        // 取消当前笔画不能额外压入撤销栈；一次 undo 应回到 setCell 之前。
+        assertTrue(e.undo())
+        assertEquals(-1, e.activeLayer.cells[0])
+    }
+
+    @Test
     fun `图层隐藏与向下合并`() {
         val e = engine()
         e.addLayer()

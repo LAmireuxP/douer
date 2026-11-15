@@ -636,6 +636,16 @@ class StudioEngine(
         bump()
     }
 
+    /** 双指缩放开始时撤销尚未提交的笔画，避免缩放误落墨。 */
+    fun cancelStroke(stroke: Stroke) {
+        val layer = frames.getOrNull(stroke.frameAt)?.layers?.getOrNull(stroke.layerAt) ?: return
+        if (stroke.changes.isEmpty()) return
+        for (change in stroke.changes.values) {
+            layer.cells[change.index] = change.old
+        }
+        bump()
+    }
+
     fun setCell(index: Int, color: Int): Boolean {
         val s = beginStroke()
         val changed = s.setCell(index, color)
