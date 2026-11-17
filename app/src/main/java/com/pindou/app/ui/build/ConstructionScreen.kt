@@ -62,6 +62,8 @@ import com.pindou.app.ui.shadcn.ShChip
 import com.pindou.app.ui.shadcn.TextButton
 import com.pindou.app.ui.theme.ClayColors
 import com.pindou.app.ui.theme.Spacing
+import kotlin.math.max
+import kotlin.math.min
 
 /**
  * 施工模式：对照图纸逐格点掉已拼的豆子。
@@ -270,6 +272,7 @@ fun ConstructionScreen(vm: AppViewModel) {
                     }
                 }
                 tick++
+                vm.saveConstructionProgress()
             }
 
             fun completeCurrent() {
@@ -355,6 +358,7 @@ fun ConstructionScreen(vm: AppViewModel) {
                             onClick = {
                                 state.cursor = c
                                 tick++
+                                vm.saveConstructionProgress()
                             },
                         )
                     }
@@ -490,8 +494,13 @@ fun ConstructionScreen(vm: AppViewModel) {
             if (colorMode) {
                 if (activeColor >= 0 && cells != null) {
                     val w = (cell / 12f).coerceIn(1.2f, 2.6f)
-                    for (y in 0 until state.height) {
-                        for (x in 0 until state.width) {
+                    // 只遍历可见格：200×200 图纸双指缩放时，全量描边会拖掉帧
+                    val x0 = max(0, ((-origin.x) / cell).toInt())
+                    val x1 = min(state.width - 1, ((size.width - origin.x) / cell).toInt())
+                    val y0 = max(0, ((-origin.y) / cell).toInt())
+                    val y1 = min(state.height - 1, ((size.height - origin.y) / cell).toInt())
+                    for (y in y0..y1) {
+                        for (x in x0..x1) {
                             val i = y * state.width + x
                             if (cells.getOrNull(i) != activeColor || state.isDone(i)) continue
                             drawRect(
