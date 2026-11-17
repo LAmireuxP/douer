@@ -2,9 +2,7 @@
 
 package com.pindou.app.ui
 
-import android.graphics.BitmapFactory
 import com.pindou.app.ui.icon.MorphIcons
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,10 +34,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -115,8 +110,6 @@ fun CreateScreen(
         }
 
         TextEntry(onClick = { textDialogOpen = true })
-
-        SampleStrip(onPick = { path, w, h -> vm.onSamplePicked(path, w, h) })
 
         Spacer(Modifier.height(Spacing.xs))
         Text(
@@ -437,70 +430,3 @@ private fun EntryCard(
         }
     }
 }
-/**
- * 内置示例：没有源图也能走一遍「导入 → 裁剪 → 生成」。
- * 缩略图直接读 assets，点击后交给 AppViewModel 的示例导入入口。
- */
-@Composable
-private fun SampleStrip(onPick: (String, Int, Int) -> Unit) {
-    val ctx = LocalContext.current
-    val samples = remember {
-        listOf(
-            Sample("samples/sample-heart.png", "像素爱心", "32×24", 32, 24),
-            Sample("samples/sample-smile.png", "像素笑脸", "24×20", 24, 20),
-        )
-    }
-    val images = remember {
-        samples.map { sample ->
-            runCatching {
-                ctx.assets.open(sample.path).use { BitmapFactory.decodeStream(it) }?.asImageBitmap()
-            }.getOrNull()
-        }
-    }
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
-    ) {
-        samples.forEachIndexed { i, sample ->
-            ShCard(
-                modifier = Modifier.weight(1f),
-                onClick = { onPick(sample.path, sample.gridW, sample.gridH) },
-            ) {
-                Row(
-                    modifier = Modifier.padding(Spacing.sm),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
-                ) {
-                    val bmp = images[i]
-                    if (bmp != null) {
-                        Image(
-                            bitmap = bmp,
-                            contentDescription = "${sample.name} 示例",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .size(56.dp)
-                                .clip(RoundedCornerShape(12.dp)),
-                        )
-                    }
-                    Column {
-                        Text("示例 · ${sample.name}", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            sample.label,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-private data class Sample(
-    val path: String,
-    val name: String,
-    val label: String,
-    val gridW: Int,
-    val gridH: Int,
-)
-

@@ -600,9 +600,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Photo Picker / GetContent 回调：解码并限制最大边 2048 */
     fun onImagePicked(uri: Uri, pixelMode: Boolean = false) {
-        // 内置示例已知网格，检测器在纯色块上容易猜错，这里直接按声明值覆盖
-        val forcedGrid = pendingSampleGrid
-        pendingSampleGrid = null
         cancelGeneration()
         pendingCreationKind = if (pixelMode) {
             SettingsStore.CreationKind.PIXEL
@@ -655,12 +652,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     CropRect.full(size[0], size[1])
                 }
-                if (forcedGrid != null) {
-                    gridW = forcedGrid.first.coerceIn(5, 500)
-                    gridH = forcedGrid.second.coerceIn(5, 500)
-                    cropRect = CropRect.full(size[0], size[1])
-                    pixelArtGrid = forcedGrid
-                } else if (art != null) {
+                if (art != null) {
                     gridW = art.artW.coerceIn(5, 200)
                     gridH = art.artH.coerceIn(5, 200)
                 }
@@ -706,30 +698,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      * 不复制导入逻辑——示例图和用户照片必须走同一个解码/检测/裁剪入口，
      * 否则示例能跑通、真机导入出问题的情况会漏测。
      */
-    private var pendingSampleGrid: Pair<Int, Int>? = null
-
-    /** 内置示例：导入前声明网格，避免检测器在纯色块上猜出 78×59 这种离谱值。 */
-    fun onSamplePicked(assetPath: String, gridW: Int, gridH: Int) {
-        pendingSampleGrid = gridW to gridH
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching {
-                val app = getApplication<Application>()
-                val dir = File(app.cacheDir, "samples").apply { mkdirs() }
-                val file = File(dir, assetPath.substringAfterLast('/'))
-                if (!file.exists() || file.length() == 0L) {
-                    app.assets.open(assetPath).use { input ->
-                        FileOutputStream(file).use { out -> input.copyTo(out) }
-                    }
-                }
-                Uri.fromFile(file)
-            }.onSuccess { uri ->
-                onImagePicked(uri)
-            }.onFailure { e ->
-                importError = "示例图加载失败：${e.message ?: e.javaClass.simpleName}"
-            }
-        }
-    }
-
     // ---------- 裁剪与几何变换 ----------
 
     private fun launchTransform(block: suspend () -> Unit) {
