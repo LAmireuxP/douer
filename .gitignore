@@ -1,7 +1,8 @@
-# Gradle
+# Gradle（只忽略仓库根和 app 模块的构建目录；
+# core/build 这类源码包名不能被误伤）
 .gradle/
-build/
-app/build/
+/build/
+/app/build/
 
 # IDE
 .idea/
@@ -31,6 +32,7 @@ keystore/
 # Local analysis artifacts
 .codex-artifacts/
 代码审查报告.md
+功能对比与新功能建议.md
 dbcheck/
 tools/
 u.xml

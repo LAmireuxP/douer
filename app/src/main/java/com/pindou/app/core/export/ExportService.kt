@@ -132,6 +132,32 @@ object ExportService {
     }.getOrElse { Exported.Failed(it.message ?: "bpat 导出失败") }
 
     /**
+     * 导出 CSV 采购清单（UTF-8 BOM）。
+     *
+     * BOM 是给 Excel/WPS 看的：没有它，双击打开中文表头会变乱码；
+     * 表头只有四列，商家按「色号 + 颗数」直接下单。
+     */
+    fun exportCsv(
+        context: Context,
+        results: List<PatternResult>,
+        projectName: String,
+    ): Exported = runCatching {
+        require(results.isNotEmpty()) { "无页数据" }
+        val text = ShoppingList.renderCsv(results, projectName)
+        val bytes = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()) +
+            text.toByteArray(Charsets.UTF_8)
+        val name = fileName(results.first(), "list", "csv")
+        val uri = saveBytesToDownloads(context, bytes, name, "text/csv")
+        Exported.FileReady(File(name), uri)
+    }.getOrElse { Exported.Failed(it.message ?: "CSV 导出失败") }
+
+    fun exportCsv(
+        context: Context,
+        result: PatternResult,
+        projectName: String,
+    ): Exported = exportCsv(context, listOf(result), projectName)
+
+    /**
      * 画像素工作区的位图导出入口：调用方已经按最终分辨率渲染好，
      * 这里只负责落 Downloads 并返回可分享的 Uri。
      */
@@ -686,6 +712,7 @@ object ExportService {
         val mime = when (exported.file.extension.lowercase()) {
             "pdf" -> "application/pdf"
             "bpat" -> "application/octet-stream"
+            "csv" -> "text/csv"
             else -> "image/png"
         }
         val shareUri = shareUriFor(context, exported)

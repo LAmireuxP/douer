@@ -66,4 +66,44 @@ object ShoppingList {
         count <= 500 -> "500粒装×1"
         else -> "1000粒装×${(count + 999) / 1000}"
     }
+
+    /**
+     * CSV 采购清单：表头 + 每色一行，按用量降序。
+     *
+     * 只输出表格，不带标题行——CSV 是给 Excel/WPS 和商家看的，
+     * 项目名放在文件名里更合适。字段做标准转义（含逗号/引号/换行时加双引号）。
+     */
+    fun renderCsv(
+        results: List<PatternResult>,
+        projectName: String,
+    ): String {
+        require(results.isNotEmpty()) { "无页数据" }
+        val first = results.first()
+        val counts = HashMap<Int, Int>()
+        for (r in results) {
+            for (c in r.cells) if (c >= 0) counts.merge(c, 1, Int::plus)
+        }
+        val usage = counts.entries.sortedByDescending { it.value }.map { it.key to it.value }
+
+        return buildString {
+            appendLine("色号,名称,颗数,建议购买")
+            for ((idx, count) in usage) {
+                val entry = first.palette.colors.getOrNull(idx) ?: continue
+                append(csvField(entry.code)).append(',')
+                append(csvField(entry.name ?: "")).append(',')
+                append(count).append(',')
+                appendLine(csvField(packSuggestion(count)))
+            }
+        }
+    }
+
+    fun renderCsv(result: PatternResult, projectName: String): String =
+        renderCsv(listOf(result), projectName)
+
+    /** RFC 4180 最小转义：含逗号/引号/换行时整体加引号，内部引号翻倍。 */
+    private fun csvField(raw: String): String {
+        val needsQuote = raw.any { it == ',' || it == '"' || it == '\n' || it == '\r' }
+        if (!needsQuote) return raw
+        return '"' + raw.replace("\"", "\"\"") + '"'
+    }
 }

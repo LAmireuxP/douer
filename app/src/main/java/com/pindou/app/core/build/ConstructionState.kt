@@ -18,7 +18,7 @@ class ConstructionState(
     /** 当前行/列号（按 [orientation] 解释），引导视线 */
     var cursor: Int = 0,
 ) {
-    enum class Orientation { ROW, COLUMN }
+    enum class Orientation { ROW, COLUMN, COLOR }
 
     val pageCount: Int = pages.coerceAtLeast(1)
     var pageIndex: Int = initialPage.coerceIn(0, pageCount - 1)
@@ -117,11 +117,12 @@ class ConstructionState(
         return -1
     }
 
-    /** 按当前方向跳到下一个未完成行/列，并更新游标；返回是否找到 */
+    /** 按当前方向跳到下一个未完成行/列，并更新游标；返回是否找到（按色号由界面处理） */
     fun jumpToNextIncomplete(): Boolean {
         val next = when (orientation) {
             Orientation.ROW -> nextIncompleteRow()
             Orientation.COLUMN -> nextIncompleteCol()
+            Orientation.COLOR -> return false
         }
         if (next < 0) return false
         cursor = next
@@ -129,10 +130,16 @@ class ConstructionState(
         return true
     }
 
-    /** 切换按行/按列引导（变更计数 +1 触发重绘）；与属性 setter 的 JVM 签名错开 */
+    /**
+     * 切换引导方式（变更计数 +1 触发重绘）；与属性 setter 的 JVM 签名错开。
+     *
+     * 三种模式的 cursor 语义不同（行号 / 列号 / 色号下标），切换时归零，
+     * 由界面按剩余进度挑第一个可用的位置，避免拿行号当色号用。
+     */
     fun updateOrientation(value: Orientation) {
         if (orientation == value) return
         orientation = value
+        cursor = 0
         bump()
     }
 }

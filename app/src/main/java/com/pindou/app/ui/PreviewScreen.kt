@@ -410,10 +410,20 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
                         },
                         modifier = Modifier.weight(1f),
                     ) { Text("PDF 打印版") }
+                    OutlinedButton(
+                        onClick = {
+                            runExport("CSV 清单") {
+                                ExportService.exportCsv(context, pages, projectName)
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("CSV 清单") }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
                     TextButton(
                         onClick = { ExportService.shareList(context, pages, projectName) },
                         modifier = Modifier.weight(1f),
-                    ) { Text("分享清单") }
+                    ) { Text("分享清单文本") }
                 }
                 exportMsg?.let {
                     Text(

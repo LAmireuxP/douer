@@ -3,18 +3,26 @@ package com.pindou.app.ui.build
 import android.content.res.Configuration
 import com.pindou.app.ui.icon.MorphIcons
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -30,6 +38,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -42,6 +51,7 @@ import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import com.pindou.app.core.build.ConstructionState
+import com.pindou.app.core.build.ConstructionColorGuide
 import com.pindou.app.ui.AppViewModel
 import com.pindou.app.ui.CellCodeDrawer.drawCellCode
 import com.pindou.app.ui.GenState
@@ -88,6 +98,37 @@ fun ConstructionScreen(vm: AppViewModel) {
     // state 是普通对象（BooleanArray 原地改写），Compose 察觉不到变化；
     // 所有改动入口都在本屏，改完自增本地 tick 触发重组 + 重绘
     var tick by remember { mutableIntStateOf(0) }
+
+    // 按色号模式：每色剩余颗数、可选颜色条（纯函数，随 tick / 换页重算）
+    val colorRemaining = remember(tick, state.pageIndex, cells) {
+        if (cells == null) emptyMap()
+        else ConstructionColorGuide.remaining(
+            cells, state.done, state.width, state.height, state.pageOffset,
+        )
+    }
+    val colorOrder = remember(colorRemaining) {
+        ConstructionColorGuide.activeColors(colorRemaining)
+    }
+    val colorMode = state.orientation == ConstructionState.Orientation.COLOR
+    // 画布用的活动色号：cursor 失效时退回第一个有剩余的色，但不在构图期写状态
+    val activeColor = if (colorMode) {
+        if ((colorRemaining[state.cursor] ?: 0) > 0) state.cursor
+        else (colorOrder.firstOrNull() ?: -1)
+    } else {
+        -1
+    }
+
+    fun advanceColorIfNeeded() {
+        if (!colorMode || cells == null) return
+        val r = ConstructionColorGuide.remaining(
+            cells, state.done, state.width, state.height, state.pageOffset,
+        )
+        if ((r[activeColor] ?: 0) > 0) return
+        val next = ConstructionColorGuide.nextIncomplete(
+            ConstructionColorGuide.activeColors(r), r, activeColor,
+        )
+        if (next >= 0) state.cursor = next else allDoneDialog = true
+    }
 
     // 绘制参数计算（缩放平移联动；tap 命中计算复用同一套）
     fun cellMetrics(canvas: Offset): Pair<Float, Offset> {
@@ -184,6 +225,78 @@ fun ConstructionScreen(vm: AppViewModel) {
                 }
             }
             val byRow = state.orientation == ConstructionState.Orientation.ROW
+            val statusLabel = when (state.orientation) {
+                ConstructionState.Orientation.ROW -> "第 ${state.cursor + 1} 行"
+                ConstructionState.Orientation.COLUMN -> "第 ${state.cursor + 1} 列"
+                ConstructionState.Orientation.COLOR -> {
+                    val code = codeList?.getOrNull(activeColor) ?: "—"
+                    "色号 $code · 剩 ${colorRemaining[activeColor] ?: 0} 颗"
+                }
+            }
+            val jumpLabel = if (colorMode) "下一色" else "跳到未完成"
+            val bulkLabel = when {
+                colorMode -> "完成该色"
+                byRow -> "完成本行"
+                else -> "完成本列"
+            }
+
+            fun jumpToNext() {
+                when (state.orientation) {
+                    ConstructionState.Orientation.ROW -> {
+                        val next = state.nextIncompleteRow()
+                        if (next < 0) {
+                            allDoneDialog = true
+                            return
+                        }
+                        state.cursor = next
+                    }
+                    ConstructionState.Orientation.COLUMN -> {
+                        val next = state.nextIncompleteCol()
+                        if (next < 0) {
+                            allDoneDialog = true
+                            return
+                        }
+                        state.cursor = next
+                    }
+                    ConstructionState.Orientation.COLOR -> {
+                        val next = ConstructionColorGuide.nextIncomplete(
+                            colorOrder, colorRemaining, activeColor,
+                        )
+                        if (next < 0) {
+                            allDoneDialog = true
+                            return
+                        }
+                        state.cursor = next
+                    }
+                }
+                tick++
+            }
+
+            fun completeCurrent() {
+                when (state.orientation) {
+                    ConstructionState.Orientation.ROW -> {
+                        state.setRowDone(state.cursor, true)
+                        state.nextIncompleteRow().takeIf { it >= 0 }?.let { state.cursor = it }
+                    }
+                    ConstructionState.Orientation.COLUMN -> {
+                        state.setColDone(state.cursor, true)
+                        state.nextIncompleteCol().takeIf { it >= 0 }?.let { state.cursor = it }
+                    }
+                    ConstructionState.Orientation.COLOR -> {
+                        val pageSize = state.width * state.height
+                        if (cells != null && activeColor >= 0) {
+                            for (i in 0 until pageSize) {
+                                if (cells.getOrNull(i) == activeColor && !state.isDone(i)) {
+                                    state.setDone(i, true)
+                                }
+                            }
+                        }
+                        advanceColorIfNeeded()
+                    }
+                }
+                tick++
+                vm.saveConstructionProgress()
+            }
             // 先选方向再读引导文本：方向 chip 放在「第 N 行」上面，阅读顺序才是先设定后看结果
             Row(
                 modifier = Modifier
@@ -192,7 +305,7 @@ fun ConstructionScreen(vm: AppViewModel) {
                 horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // 按行/按列二选一，用两个 chip 表达比 Switch 更直观
+                // 三种引导方式；按色号是拼豆绘的招牌玩法，单独一颗 chip
                 ShChip(
                     text = "按行",
                     selected = state.orientation == ConstructionState.Orientation.ROW,
@@ -211,10 +324,45 @@ fun ConstructionScreen(vm: AppViewModel) {
                         vm.saveConstructionProgress()
                     },
                 )
+                ShChip(
+                    text = "按色号",
+                    selected = colorMode,
+                    onClick = {
+                        state.updateOrientation(ConstructionState.Orientation.COLOR)
+                        state.cursor = colorOrder.firstOrNull() ?: 0
+                        tick++
+                        vm.saveConstructionProgress()
+                    },
+                )
+            }
+
+            // 色号选择条：色块 + 色号 + 剩余颗数，点一下切换当前要拼的色
+            if (colorMode && colorOrder.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = Spacing.xs)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    colorOrder.forEach { c ->
+                        ColorCountChip(
+                            argb = argbList?.getOrNull(c) ?: 0xFFCCCCCC.toInt(),
+                            code = codeList?.getOrNull(c) ?: "—",
+                            count = colorRemaining[c] ?: 0,
+                            selected = c == activeColor,
+                            onClick = {
+                                state.cursor = c
+                                tick++
+                            },
+                        )
+                    }
+                }
             }
             if (compact) {
                 Text(
-                    if (byRow) "第 ${state.cursor + 1} 行" else "第 ${state.cursor + 1} 列",
+                    statusLabel,
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(top = Spacing.xs),
                 )
@@ -224,40 +372,12 @@ fun ConstructionScreen(vm: AppViewModel) {
                         .padding(top = Spacing.xxs),
                     horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
                 ) {
-                    OutlinedButton(
-                        onClick = {
-                            val next = if (byRow) {
-                                state.nextIncompleteRow()
-                            } else {
-                                state.nextIncompleteCol()
-                            }
-                            if (next >= 0) {
-                                state.cursor = next
-                                tick++
-                            } else {
-                                allDoneDialog = true
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                    ) { Text("跳到未完成") }
-                    Button(
-                        onClick = {
-                            if (byRow) {
-                                state.setRowDone(state.cursor, true)
-                                state.nextIncompleteRow().takeIf { it >= 0 }?.let {
-                                    state.cursor = it
-                                }
-                            } else {
-                                state.setColDone(state.cursor, true)
-                                state.nextIncompleteCol().takeIf { it >= 0 }?.let {
-                                    state.cursor = it
-                                }
-                            }
-                            tick++
-                            vm.saveConstructionProgress()
-                        },
-                        modifier = Modifier.weight(1f),
-                    ) { Text(if (byRow) "完成本行" else "完成本列") }
+                    OutlinedButton(onClick = { jumpToNext() }, modifier = Modifier.weight(1f)) {
+                        Text(jumpLabel)
+                    }
+                    Button(onClick = { completeCurrent() }, modifier = Modifier.weight(1f)) {
+                        Text(bulkLabel)
+                    }
                 }
             } else {
                 Row(
@@ -268,38 +388,12 @@ fun ConstructionScreen(vm: AppViewModel) {
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        if (byRow) "第 ${state.cursor + 1} 行" else "第 ${state.cursor + 1} 列",
+                        statusLabel,
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.weight(1f),
                     )
-                    OutlinedButton(onClick = {
-                        val next = if (byRow) {
-                            state.nextIncompleteRow()
-                        } else {
-                            state.nextIncompleteCol()
-                        }
-                        if (next >= 0) {
-                            state.cursor = next
-                            tick++
-                        } else {
-                            allDoneDialog = true
-                        }
-                    }) { Text("跳到未完成") }
-                    Button(onClick = {
-                        if (byRow) {
-                            state.setRowDone(state.cursor, true)
-                            state.nextIncompleteRow().takeIf { it >= 0 }?.let {
-                                state.cursor = it
-                            }
-                        } else {
-                            state.setColDone(state.cursor, true)
-                            state.nextIncompleteCol().takeIf { it >= 0 }?.let {
-                                state.cursor = it
-                            }
-                        }
-                        tick++
-                        vm.saveConstructionProgress()
-                    }) { Text(if (byRow) "完成本行" else "完成本列") }
+                    OutlinedButton(onClick = { jumpToNext() }) { Text(jumpLabel) }
+                    Button(onClick = { completeCurrent() }) { Text(bulkLabel) }
                 }
             }
         }
@@ -318,6 +412,7 @@ fun ConstructionScreen(vm: AppViewModel) {
                         val y = ((pos.y - origin.y) / cell).toInt()
                         if (x in 0 until state.width && y in 0 until state.height) {
                             state.toggle(y * state.width + x)
+                            advanceColorIfNeeded()
                             tick++
                             vm.saveConstructionProgress()
                         }
@@ -344,10 +439,17 @@ fun ConstructionScreen(vm: AppViewModel) {
                     val baseColorArgb = if (colorIdx >= 0) argbList?.getOrNull(colorIdx) else null
                     val baseColor = baseColorArgb?.let { Color(it) }
                     val isDone = state.isDone(idx)
+                    val isSelectedColor = colorMode && colorIdx == activeColor
                     if (baseColor != null) {
-                        // 已拼的格子降透明度压灰，视觉上"褪掉"，未拼的保持醒目
+                        // 已拼的格子降透明度压灰；按色号模式下非当前色整体压暗，
+                        // 只留选中色可辨认，用户视线不会被别的颜色带走
+                        val alpha = when {
+                            !colorMode -> if (isDone) 0.28f else 1f
+                            isSelectedColor -> if (isDone) 0.25f else 1f
+                            else -> if (isDone) 0.06f else 0.12f
+                        }
                         drawRect(
-                            color = if (isDone) baseColor.copy(alpha = 0.28f) else baseColor,
+                            color = baseColor.copy(alpha = alpha),
                             topLeft = Offset(left, top),
                             size = Size(cell, cell),
                         )
@@ -358,7 +460,8 @@ fun ConstructionScreen(vm: AppViewModel) {
                             size = Size(cell, cell),
                         )
                     }
-                    if (showCodes && codeList != null && !isDone && colorIdx >= 0) {
+                    val codeVisible = !colorMode || isSelectedColor
+                    if (showCodes && codeVisible && codeList != null && !isDone && colorIdx >= 0) {
                         drawCellCode(
                             measurer = measurer,
                             code = codeList[colorIdx],
@@ -383,20 +486,38 @@ fun ConstructionScreen(vm: AppViewModel) {
                 drawLine(lineColor, Offset(origin.x, py), Offset(origin.x + state.width * cell, py), 1f)
             }
 
-            // 当前行/列引导高亮框
-            val byRow = state.orientation == ConstructionState.Orientation.ROW
-            val guideTopLeft = if (byRow) {
-                Offset(origin.x, origin.y + state.cursor * cell)
+            // 引导高亮：按行/按列画一条带，按色号则给该色剩余格描边
+            if (colorMode) {
+                if (activeColor >= 0 && cells != null) {
+                    val w = (cell / 12f).coerceIn(1.2f, 2.6f)
+                    for (y in 0 until state.height) {
+                        for (x in 0 until state.width) {
+                            val i = y * state.width + x
+                            if (cells.getOrNull(i) != activeColor || state.isDone(i)) continue
+                            drawRect(
+                                color = ClayColors.BrandTeal,
+                                topLeft = Offset(origin.x + x * cell, origin.y + y * cell),
+                                size = Size(cell, cell),
+                                style = Stroke(width = w),
+                            )
+                        }
+                    }
+                }
             } else {
-                Offset(origin.x + state.cursor * cell, origin.y)
+                val byRow = state.orientation == ConstructionState.Orientation.ROW
+                val guideTopLeft = if (byRow) {
+                    Offset(origin.x, origin.y + state.cursor * cell)
+                } else {
+                    Offset(origin.x + state.cursor * cell, origin.y)
+                }
+                val guideSize = if (byRow) Size(state.width * cell, cell) else Size(cell, state.height * cell)
+                drawRect(
+                    color = ClayColors.BrandTeal,
+                    topLeft = guideTopLeft,
+                    size = guideSize,
+                    style = Stroke(width = (cell / 12f).coerceIn(1.5f, 4f)),
+                )
             }
-            val guideSize = if (byRow) Size(state.width * cell, cell) else Size(cell, state.height * cell)
-            drawRect(
-                color = ClayColors.BrandTeal,
-                topLeft = guideTopLeft,
-                size = guideSize,
-                style = Stroke(width = (cell / 12f).coerceIn(1.5f, 4f)),
-            )
 
             with(GridRuler) {
                 drawGridRuler(
@@ -460,6 +581,47 @@ fun ConstructionScreen(vm: AppViewModel) {
             confirmButton = {
                 TextButton(onClick = { allDoneDialog = false }) { Text("好的") }
             },
+        )
+    }
+}
+
+/** 色号选择条上的一颗：色块 + 色号 + 剩余颗数，选中态描品牌色边。 */
+@Composable
+private fun ColorCountChip(
+    argb: Int,
+    code: String,
+    count: Int,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val shape = RoundedCornerShape(50)
+    Row(
+        modifier = Modifier
+            .clip(shape)
+            .background(
+                if (selected) ClayColors.BrandTeal.copy(alpha = 0.14f)
+                else MaterialTheme.colorScheme.surface,
+            )
+            .border(
+                1.dp,
+                if (selected) ClayColors.BrandTeal else MaterialTheme.colorScheme.outline,
+                shape,
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(16.dp)
+                .clip(CircleShape)
+                .background(Color(argb))
+                .border(1.dp, Color.Black.copy(alpha = 0.18f), CircleShape),
+        )
+        Text(
+            "$code $count",
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.padding(start = 6.dp),
         )
     }
 }

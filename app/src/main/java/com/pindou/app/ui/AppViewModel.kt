@@ -600,6 +600,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Photo Picker / GetContent 回调：解码并限制最大边 2048 */
     fun onImagePicked(uri: Uri, pixelMode: Boolean = false) {
+        // 内置示例已知网格，检测器在纯色块上容易猜错，这里直接按声明值覆盖
+        val forcedGrid = pendingSampleGrid
+        pendingSampleGrid = null
         cancelGeneration()
         pendingCreationKind = if (pixelMode) {
             SettingsStore.CreationKind.PIXEL
@@ -652,7 +655,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     CropRect.full(size[0], size[1])
                 }
-                if (art != null) {
+                if (forcedGrid != null) {
+                    gridW = forcedGrid.first.coerceIn(5, 500)
+                    gridH = forcedGrid.second.coerceIn(5, 500)
+                    cropRect = CropRect.full(size[0], size[1])
+                    pixelArtGrid = forcedGrid
+                } else if (art != null) {
                     gridW = art.artW.coerceIn(5, 200)
                     gridH = art.artH.coerceIn(5, 200)
                 }
@@ -688,6 +696,36 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }.onFailure { e ->
                 importError = e.message ?: "导入失败"
+            }
+        }
+    }
+
+    /**
+     * 内置示例图：assets 里的样图落到缓存文件后走同一条导入链路。
+     *
+     * 不复制导入逻辑——示例图和用户照片必须走同一个解码/检测/裁剪入口，
+     * 否则示例能跑通、真机导入出问题的情况会漏测。
+     */
+    private var pendingSampleGrid: Pair<Int, Int>? = null
+
+    /** 内置示例：导入前声明网格，避免检测器在纯色块上猜出 78×59 这种离谱值。 */
+    fun onSamplePicked(assetPath: String, gridW: Int, gridH: Int) {
+        pendingSampleGrid = gridW to gridH
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val app = getApplication<Application>()
+                val dir = File(app.cacheDir, "samples").apply { mkdirs() }
+                val file = File(dir, assetPath.substringAfterLast('/'))
+                if (!file.exists() || file.length() == 0L) {
+                    app.assets.open(assetPath).use { input ->
+                        FileOutputStream(file).use { out -> input.copyTo(out) }
+                    }
+                }
+                Uri.fromFile(file)
+            }.onSuccess { uri ->
+                onImagePicked(uri)
+            }.onFailure { e ->
+                importError = "示例图加载失败：${e.message ?: e.javaClass.simpleName}"
             }
         }
     }
@@ -2557,13 +2595,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 height = result.height,
                 done = done,
                 pages = pageCount,
-                orientation = if ((entity?.buildOrientation ?: 0) == 1) {
-                    ConstructionState.Orientation.COLUMN
-                } else {
-                    ConstructionState.Orientation.ROW
+                // 0=按行 1=按列 2=按色号；cursor 的语义随模式变化（行号/列号/色号下标）
+                orientation = when (entity?.buildOrientation ?: 0) {
+                    1 -> ConstructionState.Orientation.COLUMN
+                    2 -> ConstructionState.Orientation.COLOR
+                    else -> ConstructionState.Orientation.ROW
                 },
                 cursor = if (validStored) {
-                    (entity?.buildCursor ?: 0).coerceIn(0, (result.height - 1).coerceAtLeast(0))
+                    val upper = when (entity?.buildOrientation ?: 0) {
+                        2 -> (result.palette.colors.size - 1).coerceAtLeast(0)
+                        1 -> (result.width - 1).coerceAtLeast(0)
+                        else -> (result.height - 1).coerceAtLeast(0)
+                    }
+                    (entity?.buildCursor ?: 0).coerceIn(0, upper)
                 } else {
                     0
                 },
