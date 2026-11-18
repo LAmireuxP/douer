@@ -104,18 +104,11 @@ class ProjectLibraryController(
         query: String,
         favOnly: Boolean,
         album: String?,
-    ): List<ProjectSummary> {
-        val q = query.trim()
-        return all.filter { p ->
-            (q.isEmpty() || p.name.contains(q, ignoreCase = true)) &&
-                (!favOnly || p.fav) &&
-                (album == null || p.album == album)
-        }
-    }
+    ): List<ProjectSummary> = ProjectLibraryFilter.filter(all, query, favOnly, album)
 
     /** 已用到的专辑名（供筛选 chips） */
     fun albumNames(all: List<ProjectSummary>): List<String> =
-        all.map { it.album }.filter { it.isNotBlank() }.distinct()
+        ProjectLibraryFilter.albumNames(all)
 
     /** 复刻项目：全量拷贝为新项目，进度清零，重新开始拼 */
     fun duplicate(summary: ProjectSummary) {

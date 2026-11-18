@@ -7,6 +7,7 @@ import androidx.compose.runtime.setValue
 import com.pindou.app.core.pattern.GeneratorOptions
 import com.pindou.app.core.pattern.PixelCalibration
 import com.pindou.app.core.pattern.PixelGridInspector
+import com.pindou.app.core.pattern.PixelGridOps
 import com.pindou.app.core.pattern.PixelImportPipeline
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -14,7 +15,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.max
 
 /**
  * 像素画网格校准子域控制器。
@@ -210,15 +210,7 @@ class PixelCalibrationController(
      */
     fun nudge(dx: Double, dy: Double) {
         val currentGrid = grid ?: return
-        val next = currentGrid.nudged(dx, dy)
-        val minX = -(next.cols - 1) * next.cellW
-        val maxX = max(minX, host.imageWidth - next.cellW)
-        val minY = -(next.rows - 1) * next.cellH
-        val maxY = max(minY, host.imageHeight - next.cellH)
-        grid = next.copy(
-            offsetX = next.offsetX.coerceIn(minX, maxX),
-            offsetY = next.offsetY.coerceIn(minY, maxY),
-        )
+        grid = PixelGridOps.nudge(currentGrid, host.imageWidth, host.imageHeight, dx, dy)
         applied = false
         method = PixelGridInspector.Method.MANUAL
         scheduleAnalysis(delayMs = 40L)
@@ -227,7 +219,7 @@ class PixelCalibrationController(
     /** 调整列数：格子大小、行数和位置都不动，网格整体变宽/变窄。 */
     fun setCols(cols: Int) {
         val old = grid ?: return
-        grid = old.copy(cols = cols.coerceIn(PixelCalibration.MIN_COLS, PixelCalibration.MAX_COLS))
+        grid = PixelGridOps.setCols(old, cols)
         applied = false
         method = PixelGridInspector.Method.MANUAL
         scheduleAnalysis()
@@ -236,7 +228,7 @@ class PixelCalibrationController(
     /** 调整行数：格子大小、列数和位置都不动，网格整体变高/变矮。 */
     fun setRows(rows: Int) {
         val old = grid ?: return
-        grid = old.copy(rows = rows.coerceIn(1, PixelCalibration.MAX_COLS))
+        grid = PixelGridOps.setRows(old, rows)
         applied = false
         method = PixelGridInspector.Method.MANUAL
         scheduleAnalysis()
@@ -245,8 +237,7 @@ class PixelCalibrationController(
     /** 调整一格大小：列数/行数不动，网格整体等比放大/缩小。 */
     fun setCellSize(px: Float) {
         val old = grid ?: return
-        val target = px.toDouble().coerceIn(PixelCalibration.MIN_CELL, PixelCalibration.MAX_CELL)
-        grid = old.copy(cellW = target, cellH = target)
+        grid = PixelGridOps.setCellSize(old, px)
         applied = false
         method = PixelGridInspector.Method.MANUAL
         scheduleAnalysis()
