@@ -9,6 +9,8 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.scale
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pindou.app.core.palette.BeadPalette
@@ -46,6 +48,7 @@ import com.pindou.app.core.studio.StudioEngine
 import com.pindou.app.core.studio.StudioFrame
 import com.pindou.app.core.studio.StudioLayer
 import com.pindou.app.ui.studio.StudioSession
+import com.pindou.app.ui.chart.ChartCalibrationController
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -90,39 +93,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---------- 色号图识别（导入别人做好的网格图纸） ----------
 
-    /** 原图（校准页画布 + 网格线叠加用） */
-    var chartBitmap by mutableStateOf<Bitmap?>(null)
-        private set
-    var chartPixels: IntArray? = null
-        private set
-    var chartW: Int = 0
-        private set
-    var chartH: Int = 0
-        private set
-    var chartGrid by mutableStateOf<ChartRecognizer.ChartGrid?>(null)
-        private set
-    var chartSample by mutableStateOf<ChartRecognizer.ChartSample?>(null)
-        private set
-    /** 空白阈值：格内与纸白接近的像素占比达到该值即判空 */
-    var chartThreshold by mutableFloatStateOf(0.55f)
-        private set
-    var chartAutoAligned by mutableStateOf(false)
-        private set
-    /** 用户是否手动改过网格（列/行/格距/位置），用于底部状态标签 */
-    var chartManual by mutableStateOf(false)
-        private set
-    var chartBusy by mutableStateOf(false)
-        private set
-    var chartRefineRunning by mutableStateOf(false)
-        private set
-    private var chartRefineJob: Job? = null
-    /** 拖动时只保留最后一次采样；和像素校准一样先取消旧任务再防抖 */
-    private var chartSampleJob: Job? = null
-    private var chartRefineToken = 0
-    /** 本次识别是否由自动检测得到的网格（false = 用了默认网格兜底） */
-    var chartDetected by mutableStateOf(false)
-        private set
-    private var chartToken = 0
+    /**
+     * 色号图子域控制器。转发属性保留 `vm.chart*` 旧 API，
+     * ChartCalibrateScreen 零改动即可继续编译。
+     */
+    val chartController = ChartCalibrationController(viewModelScope, ChartHost())
+
+    val chartBitmap: Bitmap? get() = chartController.bitmap
+    val chartPixels: IntArray? get() = chartController.pixels
+    val chartW: Int get() = chartController.width
+    val chartH: Int get() = chartController.height
+    val chartGrid: ChartRecognizer.ChartGrid? get() = chartController.grid
+    val chartSample: ChartRecognizer.ChartSample? get() = chartController.sample
+    val chartThreshold: Float get() = chartController.threshold
+    val chartAutoAligned: Boolean get() = chartController.autoAligned
+    val chartManual: Boolean get() = chartController.manual
+    val chartBusy: Boolean get() = chartController.busy
+    val chartRefineRunning: Boolean get() = chartController.refineRunning
+    val chartDetected: Boolean get() = chartController.detected
 
     /** 裁剪框（工作图像素坐标系），null = 不在裁剪流程中 */
     var cropRect by mutableStateOf<CropRect?>(null)
@@ -834,7 +822,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         argb[i] = 0
                     }
                 }
-                val bmp = Bitmap.createBitmap(res.width, res.height, Bitmap.Config.ARGB_8888)
+                val bmp = createBitmap(res.width, res.height)
                 bmp.setPixels(argb, 0, res.width, 0, 0, res.width, res.height)
                 cropPreview = CropGridPreview(
                     rect = rect,
@@ -1703,7 +1691,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val file = File(dir, "ref_$id.jpg")
             val scale = min(1f, 1024f / max(bmp.width, bmp.height))
             val scaled = if (scale < 1f) {
-                Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt().coerceAtLeast(1), (bmp.height * scale).toInt().coerceAtLeast(1), true)
+                bmp.scale(
+                    (bmp.width * scale).toInt().coerceAtLeast(1),
+                    (bmp.height * scale).toInt().coerceAtLeast(1),
+                    true,
+                )
             } else bmp
             FileOutputStream(file).use { scaled.compress(Bitmap.CompressFormat.JPEG, 85, it) }
             if (scaled !== bmp) scaled.recycle()
@@ -2346,6 +2338,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         aiMaskKey = null
         aiMask = null
         aiMaskStatus = null
+        chartController.reset()
     }
 
     /** 当前文字拼豆的源文字（非 null = 文字模式）；改文字时更新 */
@@ -2917,253 +2910,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---------- 色号图识别 ----------
 
-    /**
-     * 导入别人做好的拼豆图纸（网格 + 每格颜色 + 色号文字）。
-     *
-     * 解码上限 2600px：色号图的价值全在格子里那几个字，压到 1600 以下 OCR 和
-     * 取色都会糊。检测失败不拦用户——直接给一张居中的默认网格进校准页，
-     * 手动调列数/格子大小也能落图。
-     */
-    fun onChartPicked(uri: Uri) {
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching {
-                val resolver = getApplication<Application>().contentResolver
-                val bmp = decodeScaled(
-                    openInput = { runCatching { resolver.openInputStream(uri) }.getOrNull() },
-                    maxSide = 2600,
-                )
-                val px = IntArray(bmp.width * bmp.height)
-                bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
-                Triple(bmp, px, intArrayOf(bmp.width, bmp.height))
-            }.onSuccess { (bmp, px, size) ->
-                val w = size[0]
-                val h = size[1]
-                val detected = ChartRecognizer.detect(px, w, h)
-                val grid = detected ?: ChartRecognizer.ChartGrid(
-                    cols = 29,
-                    rows = 29,
-                    cellW = minOf(w, h) / 29.0,
-                    cellH = minOf(w, h) / 29.0,
-                    offsetX = (w - minOf(w, h)) / 2.0,
-                    offsetY = (h - minOf(w, h)) / 2.0,
-                )
-                startNewProject()
-                pendingCreationKind = SettingsStore.CreationKind.CHART
-                chartBitmap = bmp
-                chartPixels = px
-                chartW = w
-                chartH = h
-                chartGrid = grid
-                chartDetected = detected != null
-                chartManual = false
-                chartAutoAligned = false
-                chartThreshold = 0.55f
-                chartSample = null
-                importError = null
-                resampleChart(debounce = false) {
-                    screen = Screen.CHART_CALIBRATE
-                    if (detected == null) {
-                        toast = "没自动识别到网格，请手动调列数和格子大小"
-                    }
-                }
-            }.onFailure { e ->
-                importError = e.message ?: "图纸导入失败"
-                toast = "图纸导入失败：${e.message ?: e.javaClass.simpleName}"
-            }
-        }
-    }
-
-    fun chartSetCols(n: Int) {
-        val g = chartGrid ?: return
-        chartRefineJob?.cancel()
-        chartRefineToken++
-        chartRefineRunning = false
-        chartGrid = g.withCols(n)
-        chartManual = true
-        chartAutoAligned = false
-        resampleChart()
-    }
-
-    fun chartSetRows(n: Int) {
-        val g = chartGrid ?: return
-        chartRefineJob?.cancel()
-        chartRefineToken++
-        chartRefineRunning = false
-        chartGrid = g.withRows(n)
-        chartManual = true
-        chartAutoAligned = false
-        resampleChart()
-    }
-
-    fun chartSetCellSize(px: Float) {
-        val g = chartGrid ?: return
-        chartRefineJob?.cancel()
-        chartRefineToken++
-        chartRefineRunning = false
-        chartGrid = g.withCellSize(px.toDouble())
-        chartManual = true
-        chartAutoAligned = false
-        resampleChart()
-    }
-
-    /** 网格整体挪一格（不是一像素）：手指拖不准时用按钮对齐 */
-    fun chartNudge(dx: Int, dy: Int) {
-        val g = chartGrid ?: return
-        chartRefineJob?.cancel()
-        chartRefineToken++
-        chartRefineRunning = false
-        chartGrid = g.copy(
-            offsetX = g.offsetX + dx * g.cellW,
-            offsetY = g.offsetY + dy * g.cellH,
-        )
-        chartManual = true
-        chartAutoAligned = false
-        resampleChart()
-    }
-
-    /** 手指拖拽：按屏幕像素直接挪网格（换算在 UI 层做） */
-    fun chartMoveBy(dx: Float, dy: Float) {
-        val g = chartGrid ?: return
-        chartRefineJob?.cancel()
-        chartRefineToken++
-        chartRefineRunning = false
-        chartGrid = g.copy(offsetX = g.offsetX + dx, offsetY = g.offsetY + dy)
-        chartManual = true
-        chartAutoAligned = false
-        resampleChart()
-    }
-
-    fun chartSetThreshold(v: Float) {
-        chartThreshold = v.coerceIn(0.2f, 0.95f)
-        resampleChart()
-    }
-
-    /** 色号图智能对齐开关：关闭必须立即生效，不能等下一次拖动。 */
-    fun chartSetSmart(enabled: Boolean) {
-        chartAutoAligned = enabled
-        if (enabled) {
-            chartRefine()
-        } else {
-            chartRefineJob?.cancel()
-            chartRefineToken++
-            chartRefineRunning = false
-        }
-    }
-
-    /** 重新跑一次自动识别；失败时保留当前网格，让用户继续手调。 */
-    fun chartRedetect() {
-        val px = chartPixels ?: return
-        val w = chartW
-        val h = chartH
-        if (w <= 0 || h <= 0) return
-        chartRefineJob?.cancel()
-        chartRefineToken++
-        chartRefineRunning = false
-        chartAutoAligned = false
-        chartBusy = true
-        viewModelScope.launch(Dispatchers.Default) {
-            val detected = ChartRecognizer.detect(px, w, h)
-            withContext(Dispatchers.Main) {
-                chartBusy = false
-                if (detected != null) {
-                    chartGrid = detected
-                    chartDetected = true
-                    chartManual = false
-                    toast = "已重新识别 ${detected.cols}×${detected.rows}"
-                    resampleChart(debounce = false)
-                } else {
-                    chartDetected = false
-                    toast = "没识别到网格，请手动调列数和格子大小"
-                }
-            }
-        }
-    }
-
-    /** 智能对齐：在梯度曲线上把网格线贴到真实网格线上 */
-    fun chartRefine() {
-        val px = chartPixels ?: return
-        val w = chartW
-        val h = chartH
-        val g = chartGrid ?: return
-        chartRefineJob?.cancel()
-        val token = ++chartRefineToken
-        chartRefineRunning = true
-        chartRefineJob = viewModelScope.launch(Dispatchers.Default) {
-            try {
-                val refined = ChartRecognizer.refine(px, w, h, g)
-                withContext(Dispatchers.Main) {
-                    if (token != chartRefineToken) return@withContext
-                    chartGrid = refined
-                    chartManual = false
-                    chartAutoAligned = true
-                }
-                resampleChart()
-            } finally {
-                withContext(Dispatchers.Main) {
-                    if (token == chartRefineToken) chartRefineRunning = false
-                }
-            }
-        }
-    }
-
-    /**
-     * 重新采样 + 生成预览缩略图。网格每动一次都跑，属于热路径：
-     * 采样 O(格数 × 格内像素/步长)，400×400 格在 2000px 图上是 16 万次取色，
-     * 必须丢到 Default 线程。token 保证只有最后一次结果能落到 state。
-     */
-    private fun resampleChart(debounce: Boolean = true, onDone: (() -> Unit)? = null) {
-        val px = chartPixels ?: return
-        val g = chartGrid ?: return
-        val w = chartW
-        val h = chartH
-        val th = chartThreshold
-        chartSampleJob?.cancel()
-        chartToken++
-        val token = chartToken
-        // 拖动中不立刻切 busy：否则顶栏进度条每一帧开关一次，布局高度
-        // 跟着变，pointerInput 会被重启，手感就是「咔咔」的。
-        if (!debounce) chartBusy = true
-        chartSampleJob = viewModelScope.launch(Dispatchers.Default) {
-            if (debounce) delay(40)
-            if (token != chartToken) return@launch
-            withContext(Dispatchers.Main) {
-                if (token == chartToken) chartBusy = true
-            }
-            val sample = ChartRecognizer.sample(px, w, h, g, th)
-            withContext(Dispatchers.Main) {
-                if (token != chartToken) return@withContext
-                chartSample = sample
-                chartBusy = false
-                onDone?.invoke()
-            }
-        }
-    }
-
-    /** 校准完落图纸：采样色 → 色卡最近色 → 预览页 */
-    fun chartToPattern() {
-        val sample = chartSample ?: return
-        val palette = selectedPalette ?: return
-        if (sample.filledCells == 0) {
-            toast = "这组网格没采到颜色，调一下列数或格子大小"
-            return
-        }
-        genState = GenState.Running(GenerationStage.MAP, 0.4f)
-        viewModelScope.launch(Dispatchers.Default) {
-            try {
-                val result = ChartRecognizer.toPattern(sample, palette)
-                genState = GenState.Done(result)
-                saveAfterGenerate(result)
-                withContext(Dispatchers.Main) {
-                    previewReturn = Screen.CHART_CALIBRATE
-                    previewReturnTab = null
-                    screen = Screen.PREVIEW
-                }
-            } catch (e: Exception) {
-                genState = GenState.Error(e.message ?: "图纸生成失败")
-                withContext(Dispatchers.Main) { toast = "图纸生成失败：${e.message}" }
-            }
-        }
-    }
+    fun onChartPicked(uri: Uri) = chartController.onPicked(uri)
+    fun chartSetCols(n: Int) = chartController.setCols(n)
+    fun chartSetRows(n: Int) = chartController.setRows(n)
+    fun chartSetCellSize(px: Float) = chartController.setCellSize(px)
+    fun chartNudge(dx: Int, dy: Int) = chartController.nudge(dx, dy)
+    fun chartMoveBy(dx: Float, dy: Float) = chartController.moveBy(dx, dy)
+    fun chartSetThreshold(v: Float) = chartController.updateThreshold(v)
+    fun chartSetSmart(enabled: Boolean) = chartController.setSmart(enabled)
+    fun chartRedetect() = chartController.redetect()
+    fun chartRefine() = chartController.refine()
+    fun chartToPattern() = chartController.toPattern()
 
     // ---------- 内部工具 ----------
 
@@ -3182,5 +2939,67 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun paletteFor(brand: String, beadSizeTag: String): BeadPalette? =
         PaletteAssets.pick(palettes, brand, beadSizeTag)
+
+    /** 色号图控制器回调：把 screen/toast/repository 这些宿主状态挡在 VM 一侧。 */
+    private inner class ChartHost : ChartCalibrationController.Host {
+        override fun startChartProject() {
+            startNewProject()
+            pendingCreationKind = SettingsStore.CreationKind.CHART
+            importError = null
+        }
+
+        override fun openChartInput(uri: Uri): java.io.InputStream? =
+            runCatching { getApplication<Application>().contentResolver.openInputStream(uri) }.getOrNull()
+
+        override val selectedPalette: BeadPalette?
+            get() = this@AppViewModel.selectedPalette
+
+        override suspend fun saveChartResult(result: PatternResult) {
+            saveAfterGenerate(result)
+        }
+
+        override fun onChartPatternReadyForCalibration(detectedGrid: Boolean) {
+            screen = Screen.CHART_CALIBRATE
+            if (!detectedGrid) {
+                toast = "没自动识别到网格，请手动调列数和格子大小"
+            }
+        }
+
+        override fun onChartRedetected(cols: Int, rows: Int) {
+            toast = "已重新识别 ${cols}×${rows}"
+        }
+
+        override fun onChartRedetectFailed() {
+            toast = "没识别到网格，请手动调列数和格子大小"
+        }
+
+        override fun onChartEmptySample() {
+            toast = "这组网格没采到颜色，调一下列数或格子大小"
+        }
+
+        override fun onChartGenerationStarted() {
+            genState = GenState.Running(GenerationStage.MAP, 0.4f)
+        }
+
+        override fun onChartPatternGenerated(result: PatternResult) {
+            genState = GenState.Done(result)
+        }
+
+        override fun onChartPatternSaved() {
+            previewReturn = Screen.CHART_CALIBRATE
+            previewReturnTab = null
+            screen = Screen.PREVIEW
+        }
+
+        override fun onChartPatternFailed(message: String) {
+            genState = GenState.Error(message)
+            toast = "图纸生成失败：$message"
+        }
+
+        override fun onChartImportFailed(message: String) {
+            importError = message
+            toast = "图纸导入失败：$message"
+        }
+    }
 
 }

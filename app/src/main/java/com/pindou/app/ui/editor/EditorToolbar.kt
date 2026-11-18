@@ -427,9 +427,9 @@ internal fun CellActionTile(
     icon: ImageVector,
     title: String,
     subtitle: String,
+    modifier: Modifier = Modifier,
     enabled: Boolean = true,
     emphasis: Boolean = false,
-    modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     val bg = when {
