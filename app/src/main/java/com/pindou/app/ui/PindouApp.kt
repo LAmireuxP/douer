@@ -4,26 +4,25 @@ import com.pindou.app.ui.icon.MorphIcons
 import com.pindou.app.core.settings.GlassAppearance
 import com.pindou.app.ui.theme.ClayColors
 import android.os.Build
+import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.snap
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerState
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -60,7 +59,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -68,6 +70,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
@@ -89,6 +92,7 @@ import com.pindou.app.ui.motion.LocalMotion
 import com.pindou.app.ui.motion.Motion
 import com.pindou.app.ui.motion.pressScale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 private data class Tab(
@@ -109,6 +113,38 @@ fun PindouApp(vm: AppViewModel) {
     val snackbarHostState = remember { SnackbarHostState() }
     val pendingUndo = vm.deleteUndo
     val appMotion = LocalMotion.current
+    val homePager = rememberPagerState(initialPage = vm.homeTab.ordinal) {
+        HomeTab.entries.size
+    }
+    val homeScope = rememberCoroutineScope()
+
+    // 页面滑动和 ViewModel 的 homeTab 双向同步：
+    // - 用户拖页只改 pager，翻过半页后再把 homeTab 写回；
+    // - 项目库「去创建」/返回键等外部调用仍写 homeTab，再由这里把 pager 滚过去。
+    LaunchedEffect(homePager) {
+        snapshotFlow { homePager.currentPage }
+            .distinctUntilChanged()
+            .collect { page ->
+                val tab = HomeTab.entries[page]
+                if (vm.homeTab != tab) vm.selectHomeTab(tab)
+            }
+    }
+    LaunchedEffect(vm.homeTab, vm.screen) {
+        if (vm.screen != Screen.HOME) return@LaunchedEffect
+        val target = vm.homeTab.ordinal
+        if (homePager.currentPage != target) {
+            if (appMotion.enabled) homePager.animateScrollToPage(target)
+            else homePager.scrollToPage(target)
+        }
+    }
+
+    fun goToHomePage(page: Int) {
+        val target = page.coerceIn(0, HomeTab.entries.lastIndex)
+        homeScope.launch {
+            if (appMotion.enabled) homePager.animateScrollToPage(target)
+            else homePager.scrollToPage(target)
+        }
+    }
 
     // 删除撤销：Snackbar 带 action，用户点「撤销」就回插；10 秒到时或
     // 被下一条 Snackbar 顶掉，就确认删除并清 sidecar。
@@ -282,6 +318,7 @@ fun PindouApp(vm: AppViewModel) {
                     when (vm.screen) {
                         Screen.HOME -> HomeScreen(
                             vm,
+                            pagerState = homePager,
                             onPickImage = ::pickImage,
                             onPickPixel = ::pickPixelImage,
                             onPickBpat = ::pickBpat,
@@ -323,8 +360,12 @@ fun PindouApp(vm: AppViewModel) {
                 GlassBottomBar(
                     backdrop = backdrop,
                     glass = vm.settings.glass,
-                    current = vm.homeTab,
-                    onSelect = vm::selectHomeTab,
+                    current = HomeTab.entries[
+                        homePager.currentPage.coerceIn(0, HomeTab.entries.lastIndex)
+                    ],
+                    pagerState = homePager,
+                    onSelect = { tab -> goToHomePage(tab.ordinal) },
+                    onSwipe = { delta -> goToHomePage(homePager.currentPage + delta) },
                     modifier = Modifier,
                 )
             }
@@ -335,36 +376,19 @@ fun PindouApp(vm: AppViewModel) {
 @Composable
 private fun HomeScreen(
     vm: AppViewModel,
+    pagerState: PagerState,
     onPickImage: () -> Unit,
     onPickPixel: () -> Unit,
     onPickBpat: () -> Unit,
     onPickChart: () -> Unit,
 ) {
-    val motion = LocalMotion.current
-    AnimatedContent(
-        targetState = vm.homeTab,
+    HorizontalPager(
+        state = pagerState,
         modifier = Modifier.fillMaxSize(),
-        transitionSpec = {
-            if (!motion.enabled) {
-                fadeIn(tween(0)) togetherWith fadeOut(tween(0))
-            } else {
-                val forward = targetState.ordinal > initialState.ordinal
-                (
-                    fadeIn(tween(Motion.BASE)) +
-                        slideInHorizontally(tween(Motion.EMPHASIS)) {
-                            if (forward) it / 24 else -it / 24
-                        }
-                    ) togetherWith (
-                    fadeOut(tween(Motion.FAST)) +
-                        slideOutHorizontally(tween(Motion.BASE)) {
-                            if (forward) -it / 32 else it / 32
-                        }
-                    )
-            }
-        },
-        label = "homeTabPage",
-    ) { tab ->
-        when (tab) {
+        userScrollEnabled = !vm.librarySelecting,
+        key = { page -> HomeTab.entries[page] },
+    ) { page ->
+        when (HomeTab.entries[page]) {
             HomeTab.LIBRARY -> ProjectLibraryScreen(
                 vm,
                 onGoCreate = { vm.selectHomeTab(HomeTab.CREATE) },
@@ -399,17 +423,21 @@ private fun GlassBottomBar(
     backdrop: Backdrop,
     glass: GlassAppearance,
     current: HomeTab,
+    pagerState: PagerState,
     onSelect: (HomeTab) -> Unit,
+    onSwipe: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val motion = LocalMotion.current
+    val swipeNow by rememberUpdatedState(onSwipe)
+    // 拖动经过 tab 时，子项的 clickable 也可能收到一次 up；
+    // 用 250ms 时间闸门吞掉这次误点，正常轻点不受影响。
+    val clickGate = remember { LongArray(1) }
     val shape = RoundedCornerShape(glass.cornerDp.dp)
     val dark = MaterialTheme.colorScheme.surface.luminance() < 0.35f
     val accent = MaterialTheme.colorScheme.primary
     val selectedInk = if (dark) Color.White else ClayColors.PrimaryInk
     val idleInk = if (dark) Color.White.copy(alpha = 0.60f) else ClayColors.Body.copy(alpha = 0.56f)
     val glassTint = if (dark) Color(0xFF0A1117) else Color.White
-    val selectedIndex = Tabs.indexOfFirst { it.target == current }.coerceAtLeast(0)
     val alphas = glass.surfaceAlphas(dark)
 
     Box(
@@ -419,6 +447,29 @@ private fun GlassBottomBar(
             .widthIn(max = 372.dp)
             .fillMaxWidth()
             .height(64.dp)
+            // 在底栏任意位置左右滑，按一格的阈值切上一页/下一页。
+            // 和子项的 clickable 共存：没过 touch slop 的轻点仍然是点 tab。
+            .pointerInput(Unit) {
+                var drag = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { drag = 0f },
+                    onDragCancel = { drag = 0f },
+                    onHorizontalDrag = { change, amount ->
+                        drag += amount
+                        clickGate[0] = SystemClock.uptimeMillis() + 250L
+                        change.consume()
+                    },
+                    onDragEnd = {
+                        clickGate[0] = SystemClock.uptimeMillis() + 250L
+                        val threshold = size.width / Tabs.size * 0.22f
+                        when {
+                            drag <= -threshold -> swipeNow(1)
+                            drag >= threshold -> swipeNow(-1)
+                        }
+                        drag = 0f
+                    },
+                )
+            }
             .drawBackdrop(
                 backdrop = backdrop,
                 shape = { shape },
@@ -485,22 +536,17 @@ private fun GlassBottomBar(
                 .padding(horizontal = 6.dp, vertical = 6.dp),
         ) {
             val slot = maxWidth / Tabs.size
-            // 一块玻璃片在三个槽位间移动，比每个 tab 各闪一下更像液体
-            val pillX by animateDpAsState(
-                targetValue = slot * selectedIndex,
-                animationSpec = if (motion.enabled) {
-                    spring(
-                        dampingRatio = 0.82f,
-                        stiffness = Spring.StiffnessMediumLow,
-                    )
-                } else {
-                    snap()
-                },
-                label = "glassTabPill",
-            )
+            // 玻璃片直接跟 Pager 的 currentPage + offsetFraction 走。
+            // 在 offset 的 layout lambda 里读，滑动时只走布局/绘制，
+            // 不会每移动一像素就重组整条玻璃底栏。
             Box(
                 Modifier
-                    .offset { IntOffset(pillX.roundToPx(), 0) }
+                    .offset {
+                        val pagePosition = (
+                            pagerState.currentPage + pagerState.currentPageOffsetFraction
+                            ).coerceIn(0f, (Tabs.size - 1).toFloat())
+                        IntOffset((slot * pagePosition).roundToPx(), 0)
+                    }
                     .width(slot)
                     .fillMaxHeight()
                     .padding(horizontal = 3.dp)
@@ -571,7 +617,11 @@ private fun GlassBottomBar(
                             .clickable(
                                 interactionSource = interaction,
                                 indication = null,
-                            ) { onSelect(tab.target) },
+                            ) {
+                                if (SystemClock.uptimeMillis() >= clickGate[0]) {
+                                    onSelect(tab.target)
+                                }
+                            },
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
