@@ -48,6 +48,7 @@ import com.pindou.app.core.studio.StudioEngine
 import com.pindou.app.core.studio.StudioFrame
 import com.pindou.app.core.studio.StudioLayer
 import com.pindou.app.ui.pixel.PixelCalibrationController
+import com.pindou.app.ui.library.ProjectLibraryController
 import com.pindou.app.ui.studio.StudioPersistence
 import com.pindou.app.ui.studio.StudioSession
 import com.pindou.app.ui.chart.ChartCalibrationController
@@ -208,6 +209,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     // 项目库与设置
     private val repository = ProjectRepository(application)
+    private val libraryController = ProjectLibraryController(
+        viewModelScope,
+        repository,
+        LibraryHost(),
+    )
     val settingsStore = SettingsStore(application)
 
     /** 当前正在编辑的项目 id（null = 尚未保存的新图纸） */
@@ -1880,63 +1886,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteProject(summary: ProjectSummary) {
-        viewModelScope.launch {
-            repository.delete(summary.id)
-            if (currentProjectId == summary.id) currentProjectId = null
-        }
+        libraryController.delete(summary)
     }
 
     /** 批量删除：Repository 负责逐条清理缩略图 / 图层 sidecar */
     fun deleteProjects(ids: Collection<Long>) {
-        if (ids.isEmpty()) return
-        val snapshot = ids.toList()
-        viewModelScope.launch {
-            try {
-                repository.deleteAll(snapshot)
-                if (currentProjectId in snapshot) currentProjectId = null
-                toast = "已删除 ${snapshot.size} 份图纸"
-            } catch (e: Exception) {
-                lastError = "批量删除失败：${e.message ?: e.javaClass.simpleName}"
-            }
-        }
+        libraryController.deleteAll(ids)
     }
 
     fun setFavProjects(ids: Collection<Long>, fav: Boolean) {
-        if (ids.isEmpty()) return
-        val snapshot = ids.toList()
-        viewModelScope.launch {
-            try {
-                repository.setFavAll(snapshot, fav)
-                toast = if (fav) {
-                    "已收藏 ${snapshot.size} 份图纸"
-                } else {
-                    "已取消收藏 ${snapshot.size} 份图纸"
-                }
-            } catch (e: Exception) {
-                lastError = "批量收藏失败：${e.message ?: e.javaClass.simpleName}"
-            }
-        }
+        libraryController.setFav(ids, fav)
     }
 
     fun setAlbumProjects(ids: Collection<Long>, album: String) {
-        if (ids.isEmpty()) return
-        val snapshot = ids.toList()
-        viewModelScope.launch {
-            try {
-                repository.setAlbumAll(snapshot, album)
-                toast = if (album.isBlank()) {
-                    "已移出文件夹（${snapshot.size} 份）"
-                } else {
-                    "已放入文件夹「${album.trim()}」（${snapshot.size} 份）"
-                }
-            } catch (e: Exception) {
-                lastError = "批量放入文件夹失败：${e.message ?: e.javaClass.simpleName}"
-            }
-        }
+        libraryController.setAlbum(ids, album)
     }
 
     fun renameProject(summary: ProjectSummary, newName: String) {
-        viewModelScope.launch { repository.rename(summary.id, newName) }
+        libraryController.rename(summary, newName)
     }
 
     fun startNewProject() {
@@ -2475,74 +2442,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // ---------- 项目库：筛选 / 收藏 / 专辑 / 复刻 ----------
 
     /** 按搜索词/收藏/专辑过滤（库页组合使用） */
-    fun filteredProjects(all: List<ProjectSummary>): List<ProjectSummary> {
-        val q = libraryQuery.trim()
-        return all.filter { p ->
-            (q.isEmpty() || p.name.contains(q, ignoreCase = true)) &&
-                (!libraryFavOnly || p.fav) &&
-                (libraryAlbum == null || p.album == libraryAlbum)
-        }
-    }
+    fun filteredProjects(all: List<ProjectSummary>): List<ProjectSummary> =
+        libraryController.filtered(all, libraryQuery, libraryFavOnly, libraryAlbum)
 
     /** 已用到的专辑名（供筛选 chips） */
     fun albumNames(all: List<ProjectSummary>): List<String> =
-        all.map { it.album }.filter { it.isNotBlank() }.distinct()
+        libraryController.albumNames(all)
 
     fun setFavProject(summary: ProjectSummary, fav: Boolean) {
-        viewModelScope.launch { repository.setFav(summary.id, fav) }
+        libraryController.setFav(summary, fav)
     }
 
     fun setAlbumProject(summary: ProjectSummary, album: String) {
-        viewModelScope.launch { repository.setAlbum(summary.id, album) }
+        libraryController.setAlbum(summary, album)
     }
 
     /** 复刻项目：全量拷贝为新项目，进度清零，重新开始拼 */
     fun duplicateProject(summary: ProjectSummary) {
-        viewModelScope.launch {
-            try {
-                val entity = repository.get(summary.id)
-                if (entity == null) {
-                    lastError = "复刻失败：项目已不存在"
-                    return@launch
-                }
-                val loaded = ensurePalettes()
-                val palette = paletteFor(entity.paletteBrand, entity.beadSize) ?: loaded.first()
-                val cells = GridCodec.decodeCells(entity.cells)
-                val pageCount = entity.pages.coerceAtLeast(1)
-                var gridWidth = entity.width
-                var gridHeight = entity.height
-                var pageLen = gridWidth * gridHeight
-                if (cells.size != pageLen * pageCount) {
-                    val repaired = ProjectGridRepair.infer(
-                        entity.width, entity.height, cells.size, pageCount,
-                    ) ?: error("数据尺寸不符")
-                    gridWidth = repaired.width
-                    gridHeight = repaired.height
-                    pageLen = gridWidth * gridHeight
-                    repository.repairSize(entity.id, gridWidth, gridHeight)
-                }
-                val pages = chunkInts(cells, pageLen)
-                val locksFlat = GridCodec.decodeLocks(entity.locked)
-                val locks = if (locksFlat.size == pageLen * pageCount) {
-                    chunkBooleans(locksFlat, pageLen)
-                } else {
-                    pages.map { BooleanArray(pageLen) }
-                }
-                repository.importProject(
-                    "${entity.name} 复刻",
-                    gridWidth,
-                    gridHeight,
-                    palette,
-                    pages,
-                    locks,
-                    entity.album,
-                    entity.thumbnailPath,
-                )
-                toast = "已复刻「${entity.name}」"
-            } catch (e: Exception) {
-                lastError = "复刻失败：${e.message ?: e.javaClass.simpleName}"
-            }
-        }
+        libraryController.duplicate(summary)
     }
 
     // ---------- 色号图识别 ----------
@@ -2576,6 +2493,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun paletteFor(brand: String, beadSizeTag: String): BeadPalette? =
         PaletteAssets.pick(palettes, brand, beadSizeTag)
+
+    /** 项目库 controller 回调：当前项目 id 与提示仍归 VM。 */
+    private inner class LibraryHost : ProjectLibraryController.Host {
+        override val currentProjectId: Long?
+            get() = this@AppViewModel.currentProjectId
+
+        override fun onCurrentProjectDeleted(id: Long) {
+            this@AppViewModel.currentProjectId = null
+        }
+
+        override fun showLibraryToast(message: String) {
+            toast = message
+        }
+
+        override fun showLibraryError(message: String) {
+            lastError = message
+        }
+
+        override suspend fun ensurePalettes(): List<BeadPalette> = this@AppViewModel.ensurePalettes()
+
+        override fun paletteFor(brand: String, beadSize: String): BeadPalette? =
+            this@AppViewModel.paletteFor(brand, beadSize)
+    }
 
     /** 像素校准控制器回调：源图、生成参数、落库和导航仍留在 VM 一侧。 */
     private inner class PixelHost : PixelCalibrationController.Host {
