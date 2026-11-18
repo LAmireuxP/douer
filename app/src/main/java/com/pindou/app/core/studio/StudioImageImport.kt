@@ -2,11 +2,13 @@ package com.pindou.app.core.studio
 
 import android.content.ContentResolver
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Matrix
 import androidx.exifinterface.media.ExifInterface
 import android.net.Uri
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.scale
+import com.pindou.app.ui.decodeScaled
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -56,23 +58,10 @@ object StudioImageImport {
     }
 
     private fun decodeBitmap(resolver: ContentResolver, uri: Uri): Bitmap {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        // inJustDecodeBounds 时 decodeStream 必然返回 null，不能拿返回值判断流。
-        val boundsInput = openInput(resolver, uri) ?: error("无法读取图片")
-        boundsInput.use { BitmapFactory.decodeStream(it, null, bounds) }
-        require(bounds.outWidth > 0 && bounds.outHeight > 0) { "图片解码失败" }
-
-        var sample = 1
-        while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= MAX_DECODE_SIDE) {
-            sample *= 2
-        }
-        val options = BitmapFactory.Options().apply {
-            inSampleSize = sample
-            inPreferredConfig = Bitmap.Config.ARGB_8888
-        }
-        val decoded = openInput(resolver, uri)?.use {
-            BitmapFactory.decodeStream(it, null, options)
-        } ?: error("图片解码失败")
+        val decoded = decodeScaled(
+            openInput = { openInput(resolver, uri) },
+            maxSide = MAX_DECODE_SIDE,
+        )
         return applyOrientation(decoded, readOrientation(resolver, uri))
     }
 
@@ -89,8 +78,8 @@ object StudioImageImport {
         val scale = min(targetW.toFloat() / source.width, targetH.toFloat() / source.height)
         val drawW = max(1, (source.width * scale).roundToInt())
         val drawH = max(1, (source.height * scale).roundToInt())
-        val scaled = Bitmap.createScaledBitmap(source, drawW, drawH, true)
-        val out = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+        val scaled = source.scale(drawW, drawH, true)
+        val out = createBitmap(targetW, targetH)
         Canvas(out).drawBitmap(
             scaled,
             (targetW - drawW) / 2f,

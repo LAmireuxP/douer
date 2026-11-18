@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
+import androidx.core.graphics.createBitmap
 import kotlin.math.roundToInt
 
 /**
@@ -29,7 +30,7 @@ object TextRasterizer {
         val w = (rawW * k).roundToInt().coerceAtLeast(outWidth.coerceIn(5, 200))
         val h = (rawH * k).roundToInt().coerceAtLeast(outHeight.coerceIn(5, 200))
 
-        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val bitmap = createBitmap(w, h)
         val canvas = Canvas(bitmap)
         canvas.drawColor(Color.WHITE)
 

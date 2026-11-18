@@ -192,6 +192,7 @@ private fun RailDragHeader(
  * 17 个工具按 34dp 一行排，整体可滚；不再占一条横向长条，
  * 画布上下空间留给画布本身。选中工具的名字由画布下方提示行显示。
  */
+@Suppress("ModifierParameter")
 @Composable
 fun StudioToolRail(
     session: StudioSession,
@@ -215,6 +216,7 @@ fun StudioToolRail(
 }
 
 /** 贴近画布上下边、且不在左右两侧时，工具条横过来排成一行。 */
+@Suppress("ModifierParameter")
 @Composable
 private fun StudioToolRailHorizontal(
     session: StudioSession,
@@ -277,6 +279,7 @@ private fun StudioToolRailHorizontal(
     }
 }
 
+@Suppress("ModifierParameter")
 @Composable
 fun StudioColorRail(
     session: StudioSession,
@@ -302,6 +305,7 @@ fun StudioColorRail(
 }
 
 /** 贴近画布上下边时，色板横过来排成一行。 */
+@Suppress("ModifierParameter")
 @Composable
 private fun StudioColorRailHorizontal(
     session: StudioSession,
@@ -417,6 +421,7 @@ private fun StudioColorRailHorizontal(
 /**
  * 竖屏左侧工具浮窗：只放图标，一列到底。
  */
+@Suppress("ModifierParameter")
 @Composable
 private fun StudioToolRailVertical(
     session: StudioSession,
@@ -496,6 +501,7 @@ private fun StudioToolRailVertical(
 }
 
 /** 竖屏右侧颜色浮窗：当前色 / 副色 / 最近用色 / 色卡入口。 */
+@Suppress("ModifierParameter")
 @Composable
 private fun StudioColorRailVertical(
     session: StudioSession,

@@ -16,6 +16,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.core.graphics.createBitmap
 import com.pindou.app.core.pattern.CodeLabelMode
 import com.pindou.app.core.pattern.ColorLabelLayout
 import com.pindou.app.core.pattern.PatternResult
@@ -27,6 +28,12 @@ import java.io.FileOutputStream
  * 文件名规则：拼豆_<项目名>_<尺寸>_<时间戳>.<ext>
  */
 object ExportService {
+
+    /** PDF 分页模式：ROWS 按可用高度均分行；BOARDS 每页固定一块 29×29 拼装底板。 */
+    enum class PageMode { ROWS, BOARDS }
+
+    /** BOARDS 分页的底板边长；与施工引导的物理底板口径一致，两处需同步改。 */
+    const val BOARD_SIDE = BoardPdfLayout.SIDE
 
     sealed interface Exported {
         data class FileReady(val file: File, val uri: Uri) : Exported
@@ -76,6 +83,7 @@ object ExportService {
             } else {
                 drawCompactHeader(
                     bmp, titleHeight, projectName, r,
+                    results.first().palette.beadSize.pitchMm,
                     ExportRenderer.rulerSizePx(cellPx), cellPx,
                 )
                 drawCellCodes(
@@ -91,7 +99,7 @@ object ExportService {
             parts[0]
         } else {
             val totalHeight = parts.sumOf { it.height }
-            Bitmap.createBitmap(parts[0].width, totalHeight, Bitmap.Config.ARGB_8888).also { combined ->
+            createBitmap(parts[0].width, totalHeight).also { combined ->
                 val canvas = Canvas(combined)
                 var y = 0
                 for (part in parts) {
@@ -288,7 +296,8 @@ object ExportService {
         result: PatternResult,
         projectName: String,
         codeLabels: CodeLabelMode = CodeLabelMode.FULL,
-    ): Exported = exportPdf(context, listOf(result), projectName, codeLabels)
+        pageMode: PageMode = PageMode.ROWS,
+    ): Exported = exportPdf(context, listOf(result), projectName, codeLabels, pageMode)
 
     /** 多页 PDF：每页图纸独立渲染切分，末尾附聚合清单页 */
     fun exportPdf(
@@ -296,6 +305,7 @@ object ExportService {
         results: List<PatternResult>,
         projectName: String,
         codeLabels: CodeLabelMode = CodeLabelMode.FULL,
+        pageMode: PageMode = PageMode.ROWS,
     ): Exported = runCatching {
         require(results.isNotEmpty()) { "无页数据" }
 
@@ -319,6 +329,8 @@ object ExportService {
             // 再按整页可用宽高计算每页行数；不直接切长图，避免第二页没有坐标。
             val titleHeight = titleBarHeight(cellPx)
             val legendH = legendHeightPx(r.usage().size, cellPx)
+            val boardsX = BoardPdfLayout.boardsX(r.width)
+            val boardsY = BoardPdfLayout.boardsY(r.height)
             fun plan(pageW: Int, pageH: Int): PagePlan {
                 val usableW = pageW - margin * 2f
                 val usableH = pageH - margin * 2f
@@ -329,44 +341,88 @@ object ExportService {
                 val pages = (r.height + rows - 1) / rows
                 return PagePlan(rows, pages, cellPx * widthScale)
             }
-
-            val portraitPlan = plan(portraitW, portraitH)
-            val landscapePlan = plan(portraitH, portraitW)
-            val portraitOnePage = portraitPlan.pages == 1 && portraitPlan.cellPt >= 5f
-            val landscapeOnePage = landscapePlan.pages == 1 && landscapePlan.cellPt >= 5f
-            val landscape = when {
-                // 能一页放下时优先一页，和参考图的单张图纸一致；
-                // 两种方向都能一页时选格子更大的那一种。
-                portraitOnePage && landscapeOnePage ->
-                    landscapePlan.cellPt > portraitPlan.cellPt
-                portraitOnePage -> false
-                landscapeOnePage -> true
-                // 都要分页时选页数少的；页数相同选格子大的。
-                portraitPlan.pages != landscapePlan.pages ->
-                    portraitPlan.pages < landscapePlan.pages
-                else -> landscapePlan.cellPt > portraitPlan.cellPt
+            // BOARDS：每页固定一块 29×29 底板；行数由板边界与可用高度共同决定。
+            // 页号 = 板号，打印后把纸放在对应物理板旁边逐板拼。
+            fun planBoards(pageW: Int, pageH: Int): PagePlan {
+                val usableW = pageW - margin * 2f
+                val widthScale = usableW / layoutW
+                // 每页固定完整的一块板，渲染时再按纸张等比缩放；
+                // 不能按 legendH 截断行数，否则会漏掉板内下半部分。
+                val rows = minOf(BOARD_SIDE, r.height)
+                return PagePlan(rows, boardsX * boardsY, cellPx * widthScale)
             }
-            val plan = if (landscape) landscapePlan else portraitPlan
+
+            val landscape = when (pageMode) {
+                PageMode.ROWS -> {
+                    val portraitPlan = plan(portraitW, portraitH)
+                    val landscapePlan = plan(portraitH, portraitW)
+                    val portraitOnePage = portraitPlan.pages == 1 && portraitPlan.cellPt >= 5f
+                    val landscapeOnePage = landscapePlan.pages == 1 && landscapePlan.cellPt >= 5f
+                    when {
+                        // 能一页放下时优先一页，和参考图的单张图纸一致；
+                        // 两种方向都能一页时选格子更大的那一种。
+                        portraitOnePage && landscapeOnePage ->
+                            landscapePlan.cellPt > portraitPlan.cellPt
+                        portraitOnePage -> false
+                        landscapeOnePage -> true
+                        // 都要分页时选页数少的；页数相同选格子大的。
+                        portraitPlan.pages != landscapePlan.pages ->
+                            portraitPlan.pages < landscapePlan.pages
+                        else -> landscapePlan.cellPt > portraitPlan.cellPt
+                    }
+                }
+                PageMode.BOARDS -> {
+                    val portraitBoardPlan = planBoards(portraitW, portraitH)
+                    val landscapeBoardPlan = planBoards(portraitH, portraitW)
+                    when {
+                        portraitBoardPlan.pages == 1 -> false
+                        landscapeBoardPlan.pages == 1 -> true
+                        // 两方向都放得下时选格子更大的；否则选能放下的那个。
+                        else -> landscapeBoardPlan.cellPt > portraitBoardPlan.cellPt
+                    }
+                }
+            }
+            val plan = when (pageMode) {
+                PageMode.ROWS -> if (landscape) plan(portraitH, portraitW) else plan(portraitW, portraitH)
+                PageMode.BOARDS -> if (landscape) planBoards(portraitH, portraitW) else planBoards(portraitW, portraitH)
+            }
             val pageW = if (landscape) portraitH else portraitW
             val pageH = if (landscape) portraitW else portraitH
             val usableW = pageW - margin * 2f
             val usableH = pageH - margin * 2f
             val rowsPerPage = plan.rowsPerPage
             val sheetCount = plan.pages
-            // 最后一页只剩两三行时很难看：把总行数平均分到各页，
-            // 83×57 从 55+2 变成 29+28，页数与每格字号都不变。
-            val baseRows = r.height / sheetCount
-            val extraRows = r.height % sheetCount
+            // ROWS：最后一页只剩两三行时很难看，把总行数平均分到各页；
+            // BOARDS：页 = 板，行高固定板高，列区间随板横向平移。
+            val baseRows = if (pageMode == PageMode.ROWS) r.height / sheetCount else 0
+            val extraRows = if (pageMode == PageMode.ROWS) r.height % sheetCount else 0
             var nextRow = 0
 
             for (sheet in 0 until sheetCount) {
-                val rowStart = nextRow
-                val rowCount = baseRows + if (sheet < extraRows) 1 else 0
-                nextRow += rowCount
+                val rowStart: Int
+                val rowCount: Int
+                val colStart: Int
+                if (pageMode == PageMode.BOARDS) {
+                    rowStart = BoardPdfLayout.rowStart(r.width, r.height, sheet)
+                    rowCount = BoardPdfLayout.rowCount(r.width, r.height, sheet)
+                    colStart = BoardPdfLayout.colStart(r.width, sheet)
+                } else {
+                    rowStart = nextRow
+                    rowCount = baseRows + if (sheet < extraRows) 1 else 0
+                    nextRow += rowCount
+                    colStart = 0
+                }
+                val colCount = if (pageMode == PageMode.BOARDS) {
+                    BoardPdfLayout.colCount(r.width, sheet)
+                } else r.width
                 val slice = PatternResult(
-                    r.width,
+                    colCount,
                     rowCount,
-                    r.cells.copyOfRange(rowStart * r.width, (rowStart + rowCount) * r.width),
+                    IntArray(rowCount * colCount) { i ->
+                        val gy = rowStart + i / colCount
+                        val gx = colStart + i % colCount
+                        r.cells[gy * r.width + gx]
+                    },
                     r.palette,
                     r.elapsedMs,
                 )
@@ -379,13 +435,24 @@ object ExportService {
                             showGrid = true,
                             showRuler = true,
                             rowOffset = rowStart,
+                            colOffset = if (pageMode == PageMode.BOARDS) -colStart else 0,
                             titleHeightPx = titleHeight,
                         ),
                     )
                     .toBitmap()
-                drawCompactHeader(patternBmp, titleHeight, projectName, r, ruler, cellPx)
+                // 标题副标题按本页实际渲染的切片统计；BOARDS 时就是单板尺寸/色数/颗数
+                val headerResult = slice
+                val headerTitle = if (pageMode == PageMode.BOARDS && sheetCount > 1) {
+                    "$projectName · 第 ${sheet + 1}/$sheetCount 板"
+                } else {
+                    projectName
+                }
+                drawCompactHeader(
+                    patternBmp, titleHeight, headerTitle, headerResult,
+                    r.palette.beadSize.pitchMm, ruler, cellPx,
+                )
                 drawCellCodes(patternBmp, slice, cellPx, titleHeight, ruler, codeLabels)
-                val pageBmp = if (sheet == sheetCount - 1) {
+                val pageBmp = if (pageMode == PageMode.ROWS && sheet == sheetCount - 1) {
                     addLegend(patternBmp, r, cellPx)
                 } else {
                     patternBmp
@@ -434,6 +501,7 @@ object ExportService {
         titleHeight: Int,
         projectName: String,
         r: PatternResult,
+        pitchMm: Double,
         ruler: Int,
         cell: Int,
     ) {
@@ -442,7 +510,8 @@ object ExportService {
         val left = ruler + cell * 0.35f
         val maxWidth = bitmap.width - left - ruler
         val title = projectName.ifBlank { "拼豆图纸" }
-        val subtitle = "${r.width}×${r.height}/${r.usage().size}色/共" +
+        val cm = physicalCm(r.width, r.height, pitchMm)
+        val subtitle = "${r.width}×${r.height}（$cm）/${r.usage().size}色/共" +
             "${r.cells.count { it >= 0 }}颗"
 
         val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
@@ -472,6 +541,14 @@ object ExportService {
         canvas.drawText(subtitle, left, titleHeight * 0.90f, subPaint)
     }
 
+    /** 实物尺寸（宽×高，cm）。按豆子中心距换算，四舍五入到 0.1cm。 */
+    fun physicalCm(cols: Int, rows: Int, pitchMm: Double): String {
+        if (pitchMm <= 0.0 || cols <= 0 || rows <= 0) return "—"
+        val w = cols * pitchMm / 10.0
+        val h = rows * pitchMm / 10.0
+        return "${"%.1f".format(w)}×${"%.1f".format(h)}cm"
+    }
+
     /** 底部用量条：白底黑框，色块 + 色号 + 颗数；颜色少时 4 列更接近参考图。 */
     private fun legendHeightPx(colorCount: Int, cellPx: Int): Int {
         if (colorCount <= 0) return 0
@@ -486,7 +563,7 @@ object ExportService {
         if (usage.isEmpty()) return source
         val rowH = cellPx.coerceIn(32, 120)
         val legendH = legendHeightPx(usage.size, cellPx)
-        val out = Bitmap.createBitmap(source.width, source.height + legendH, Bitmap.Config.ARGB_8888)
+        val out = createBitmap(source.width, source.height + legendH)
         val canvas = Canvas(out)
         canvas.drawColor(0xFFFFFFFF.toInt())
         canvas.drawBitmap(source, 0f, 0f, null)
@@ -831,7 +908,7 @@ object ExportService {
         FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
 
     private fun ExportRenderer.RenderedBitmap.toBitmap(): Bitmap {
-        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val bmp = createBitmap(width, height)
         bmp.setPixels(pixels, 0, width, 0, 0, width, height)
         return bmp
     }

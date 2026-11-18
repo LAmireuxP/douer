@@ -3,6 +3,7 @@ package com.pindou.app.ui
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
+import androidx.core.graphics.createBitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -80,10 +81,9 @@ fun PdfPreviewDialog(
                                 val targetW = 2400
                                 val scale = targetW.toFloat() / page.width
                                 val targetH = (page.height * scale).toInt().coerceAtLeast(1)
-                                val bitmap = Bitmap.createBitmap(
+                                val bitmap = createBitmap(
                                     targetW,
                                     targetH,
-                                    Bitmap.Config.ARGB_8888,
                                 )
                                 bitmap.eraseColor(android.graphics.Color.WHITE)
                                 page.render(

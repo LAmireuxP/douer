@@ -26,6 +26,8 @@ object ExportRenderer {
         val showRuler: Boolean = false,
         /** 分页导出时的全局行偏移：坐标从 rowOffset + 1 开始，而不是每页重新从 1 数。 */
         val rowOffset: Int = 0,
+        /** 分页导出时的全局列偏移；按底板切页时传 -colStart，让列标在板内从 1 数起。 */
+        val colOffset: Int = 0,
         /**
          * 标题栏高度（像素）。内嵌点阵字体只有 ASCII 字形，中文标题会缺字，
          * 因此这里只**预留空间**，真正的标题文字由 Android 层用系统字体绘制
@@ -123,6 +125,7 @@ object ExportRenderer {
             drawRuler(
                 pixels, w, h, ox, oy, cell, result.width, result.height,
                 ruler, titleH, options.rowOffset,
+                options.colOffset,
             )
         }
         // 最外层双线框：参考图的「整张图纸」边界，裁切/打印时边界清楚
@@ -215,6 +218,7 @@ object ExportRenderer {
             drawRuler(
                 pixels, w, h, ox, oy, cell, result.width, result.height,
                 ruler, titleH, options.rowOffset,
+                options.colOffset,
             )
         }
         return RenderedBitmap(w, h, pixels)
@@ -250,6 +254,7 @@ object ExportRenderer {
         ruler: Int,
         titleH: Int,
         rowOffset: Int,
+        colOffset: Int,
     ) {
         val contentRight = ox + cols * cell
         val contentBottom = oy + rows * cell
@@ -269,7 +274,7 @@ object ExportRenderer {
         val scale = (ruler * 0.55f / 7f).toInt().coerceIn(1, 3)
         val glyphH = 7 * scale
         for (gx in 0 until cols step step) {
-            val label = (gx + 1).toString()
+            val label = (colOffset + gx + 1).toString()
             val tw = label.length * 6 * scale - scale
             val x = ox + gx * cell + (cell - tw) / 2
             drawTextLine(

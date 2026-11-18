@@ -24,6 +24,9 @@ android {
         targetSdk = 34
         versionCode = 21
         versionName = "1.3.1"
+        // 显式声明 instrumented test runner；AGP 默认同值，但写出来可避免
+        // 未来插件升级改变默认值导致 MigrationTest 静默找不到 runner。
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -59,6 +62,12 @@ android {
     buildFeatures {
         compose = true
     }
+
+    sourceSets {
+        // MigrationTestHelper 从 androidTest 的 assets 读 schema JSON；
+        // 不挂载 schemas 目录时，createDatabase 会报 Cannot find the schema file。
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+    }
 }
 
 kotlin {
@@ -92,6 +101,10 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     debugImplementation(libs.compose.ui.tooling)
     testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.room.testing)
+    androidTestImplementation(libs.junit)
 }
 
 ksp {

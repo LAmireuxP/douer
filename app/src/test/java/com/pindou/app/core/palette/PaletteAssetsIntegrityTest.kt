@@ -16,6 +16,7 @@ class PaletteAssetsIntegrityTest {
         "panpan.json" to 280, "mixiaowo.json" to 280,
         "perler.json" to 90, "hama.json" to 80,
         "artkal_s.json" to 160, "artkal_mini.json" to 210,
+        "mard_8mm.json" to 280,
     )
 
     @Test
@@ -31,6 +32,17 @@ class PaletteAssetsIntegrityTest {
                 palette.colors.all { c -> c.lab.all { it.isFinite() } },
             )
         }
+    }
+
+    /** 8mm 色卡共用 5mm 色号体系：只允许豆距不同，色号/顺序/颜色值必须完全一致。 */
+    @Test
+    fun `MARD 8mm 与 5mm 色号体系一致`() {
+        val five = PaletteJson.parse(File("src/main/assets/palettes/mard.json").readText())
+        val eight = PaletteJson.parse(File("src/main/assets/palettes/mard_8mm.json").readText())
+
+        assertEquals("mard_8mm 豆子规格应为 8mm", BeadSize.MM8, eight.beadSize)
+        assertEquals("8mm 色号体系必须沿用 5mm MARD（含顺序）",
+            five.colors.map { it.code to it.argb }, eight.colors.map { it.code to it.argb })
     }
 
     @Test

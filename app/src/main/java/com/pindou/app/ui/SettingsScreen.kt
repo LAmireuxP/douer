@@ -4,7 +4,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -33,6 +32,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -43,6 +43,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pindou.app.core.display.RefreshRateController
@@ -180,7 +181,7 @@ fun SettingsScreen(vm: AppViewModel) {
                         )
                     }
                 }
-                var liveHz by remember { mutableStateOf(view.display?.refreshRate ?: 0f) }
+                var liveHz by remember { mutableFloatStateOf(view.display?.refreshRate ?: 0f) }
                 LaunchedEffect(view) {
                     while (true) {
                         liveHz = view.display?.refreshRate ?: liveHz
@@ -323,24 +324,26 @@ fun SettingsScreen(vm: AppViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 val context = LocalContext.current
-                val issueUrl = "https://github.com/LAmireuxP/douer/issues"
+                // 反馈走邮箱而不是 Issues：用户多半没有 GitHub 账号，
+                // mailto 在未装邮件客户端时由下面的复制分支兜底。
+                val feedbackEmail = "li.amireux@qq.com"
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(8.dp))
                         .clickable {
                             val intent = Intent(
-                                Intent.ACTION_VIEW,
-                                Uri.parse(issueUrl),
+                                Intent.ACTION_SENDTO,
+                                "mailto:$feedbackEmail".toUri(),
                             )
                             runCatching { context.startActivity(intent) }
                                 .onFailure {
                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
                                         as ClipboardManager
                                     clipboard.setPrimaryClip(
-                                        ClipData.newPlainText("问题反馈地址", issueUrl),
+                                        ClipData.newPlainText("问题反馈邮箱", feedbackEmail),
                                     )
-                                    Toast.makeText(context, "反馈地址已复制", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "反馈邮箱已复制", Toast.LENGTH_SHORT).show()
                                 }
                         }
                         .padding(vertical = 6.dp),
@@ -349,7 +352,7 @@ fun SettingsScreen(vm: AppViewModel) {
                     Text("问题反馈", style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.weight(1f))
                     Text(
-                        "GitHub / Gitee Issues",
+                        feedbackEmail,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -430,7 +433,7 @@ private fun openReleasePage(context: Context) {
     for (url in urls) {
         val ok = runCatching {
             context.startActivity(
-                Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                Intent(Intent.ACTION_VIEW, url.toUri())
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             )
         }.isSuccess

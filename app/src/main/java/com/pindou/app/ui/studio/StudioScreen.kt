@@ -1,9 +1,6 @@
 package com.pindou.app.ui.studio
 
-import android.Manifest
 import android.content.res.Configuration
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -38,7 +35,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,6 +55,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.runtime.rememberUpdatedState
 import com.pindou.app.core.editor.SymmetryMode
 import com.pindou.app.core.export.ExportService
+import com.pindou.app.ui.export.rememberExporter
 import com.pindou.app.core.studio.StudioExport
 import com.pindou.app.ui.AppViewModel
 import com.pindou.app.ui.PdfPreviewDialog
@@ -66,10 +63,7 @@ import com.pindou.app.ui.Screen
 import com.pindou.app.ui.icon.MorphIcons
 import com.pindou.app.ui.theme.ClayColors
 import com.pindou.app.ui.theme.Spacing
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 /**
@@ -92,7 +86,6 @@ fun StudioScreen(vm: AppViewModel) {
     val revision = session.revision
     val usedColorCount = remember(revision) { engine.usedColorCount() }
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val canvasState = remember { StudioCanvasState() }
     var panel by remember { mutableStateOf<StudioPanel?>(null) }
     var paletteSheet by remember { mutableStateOf(false) }
@@ -101,42 +94,13 @@ fun StudioScreen(vm: AppViewModel) {
     var textOrigin by remember { mutableIntStateOf(-1) }
     var moreMenu by remember { mutableStateOf(false) }
     var tutorialStep by remember { mutableIntStateOf(-1) }
-    var exportMsg by remember { mutableStateOf<String?>(null) }
     var pdfPreview by remember { mutableStateOf<ExportService.Exported.FileReady?>(null) }
-    var pendingExport by remember { mutableStateOf<Pair<String, () -> ExportService.Exported?>?>(null) }
-
-    val storageLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) {
-        val pending = pendingExport
-        pendingExport = null
-        if (pending != null) {
-            scope.launch {
-                exportMsg = "正在导出${pending.first}…"
-                val out = withContext(Dispatchers.IO) { pending.second() }
-                handleExport(out, pending.first) { msg -> exportMsg = msg }
-                if (out is ExportService.Exported.FileReady &&
-                    out.file.extension.equals("pdf", true)
-                ) pdfPreview = out
-            }
-        }
-    }
-
-    fun runExport(label: String, block: () -> ExportService.Exported?) {
-        if (ExportService.needsLegacyStoragePermission(context)) {
-            pendingExport = label to block
-            storageLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-        } else {
-            scope.launch {
-                exportMsg = "正在导出$label…"
-                val out = withContext(Dispatchers.IO) { block() }
-                handleExport(out, label) { msg -> exportMsg = msg }
-                if (out is ExportService.Exported.FileReady &&
-                    out.file.extension.equals("pdf", true)
-                ) pdfPreview = out
-            }
-        }
-    }
+    val exporter = rememberExporter { out -> if (out is ExportService.Exported.FileReady &&
+        out.file.extension.equals("pdf", true)
+    ) pdfPreview = out }
+    var exportMsg by remember { mutableStateOf<String?>(null) }
+    val exporterMessage = exporter.message
+    if (exporterMessage != null && exportMsg != exporterMessage) exportMsg = exporterMessage
 
     LaunchedEffect(exportMsg) {
         if (exportMsg != null) {
@@ -557,17 +521,17 @@ fun StudioScreen(vm: AppViewModel) {
         StudioPanel.EXPORT -> StudioExportPanel(
             session = session,
             onExportPixel = { scale, transparent ->
-                runExport("像素 PNG") {
+                exporter.run("像素 PNG") {
                     StudioExport.exportPixelPng(context, engine, engine.frameIndex, scale, transparent, session.name)
                 }
             },
             onExportGif = { scale ->
-                runExport("GIF") {
+                exporter.run("GIF") {
                     StudioExport.exportAnimation(context, engine, scale, session.name)
                 }
             },
             onExportCode = {
-                runExport("色号图") {
+                exporter.run("色号图") {
                     StudioExport.exportCodeChart(
                         context, engine, palette, session.name,
                         symbol = false,
@@ -576,12 +540,12 @@ fun StudioScreen(vm: AppViewModel) {
                 }
             },
             onExportSymbol = {
-                runExport("符号版") {
+                exporter.run("符号版") {
                     StudioExport.exportCodeChart(context, engine, palette, session.name, symbol = true)
                 }
             },
             onExportPdf = {
-                runExport("PDF") {
+                exporter.run("PDF") {
                     StudioExport.exportPdf(
                         context, engine, palette, session.name,
                         codeLabels = if (session.simplifiedLabels) CodeLabelMode.OUTLINE else CodeLabelMode.FULL,
@@ -589,7 +553,7 @@ fun StudioScreen(vm: AppViewModel) {
                 }
             },
             onExportPalette = {
-                runExport("调色板") {
+                exporter.run("调色板") {
                     StudioExport.exportPalette(context, engine, palette, session.name)
                 }
             },
@@ -736,20 +700,6 @@ private fun FloatingStudioPanel(
             .offset { IntOffset(x.roundToInt(), y.roundToInt()) },
     ) {
         content(headerModifier)
-    }
-}
-
-private fun handleExport(
-    out: ExportService.Exported?,
-    label: String,
-    setMsg: (String) -> Unit,
-) {
-    when (out) {
-        is ExportService.Exported.FileReady -> {
-            setMsg("$label 已保存到下载目录：${out.file.name}")
-        }
-        is ExportService.Exported.Failed -> setMsg("$label 失败：${out.message}")
-        null -> setMsg("$label 失败")
     }
 }
 

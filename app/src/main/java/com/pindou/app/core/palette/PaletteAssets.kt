@@ -13,6 +13,8 @@ object PaletteAssets {
         "all_solid_24.json", "all_solid_48.json", "all_solid_72.json",
         "all_solid_96.json", "all_solid_120.json", "all_solid_144.json",
         "all_solid_216.json", "all_solid_221.json", "all_solid_272.json",
+        // 8mm 大颗粒：色号体系沿用 MARD，尺寸由 beadSize 区分
+        "mard_8mm.json",
         "mard.json", "coco.json", "manman.json", "panpan.json", "mixiaowo.json",
         "perler.json", "hama.json", "artkal_s.json", "artkal_mini.json",
     )

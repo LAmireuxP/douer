@@ -1,6 +1,7 @@
 package com.pindou.app.core.pattern
 
 import android.graphics.Bitmap
+import androidx.core.graphics.scale
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.segmentation.subject.SubjectSegmentation
 import com.google.mlkit.vision.segmentation.subject.SubjectSegmentationResult
@@ -98,7 +99,7 @@ object AiSubjectSegmenter {
         val k = MAX_LONG_SIDE.toDouble() / longSide
         val w = (bitmap.width * k).roundToInt().coerceAtLeast(8)
         val h = (bitmap.height * k).roundToInt().coerceAtLeast(8)
-        return Bitmap.createScaledBitmap(bitmap, w, h, true)
+        return bitmap.scale(w, h, true)
     }
 
     /** 最近邻回原图尺寸：掩码只有 0/1，双线性插值会造出灰色过渡带。 */

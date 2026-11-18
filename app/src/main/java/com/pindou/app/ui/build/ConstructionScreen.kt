@@ -112,6 +112,7 @@ fun ConstructionScreen(vm: AppViewModel) {
         ConstructionColorGuide.activeColors(colorRemaining)
     }
     val colorMode = state.orientation == ConstructionState.Orientation.COLOR
+    val boardMode = state.orientation == ConstructionState.Orientation.BOARD
     // 画布用的活动色号：cursor 失效时退回第一个有剩余的色，但不在构图期写状态
     val activeColor = if (colorMode) {
         if ((colorRemaining[state.cursor] ?: 0) > 0) state.cursor
@@ -234,10 +235,21 @@ fun ConstructionScreen(vm: AppViewModel) {
                     val code = codeList?.getOrNull(activeColor) ?: "—"
                     "色号 $code · 剩 ${colorRemaining[activeColor] ?: 0} 颗"
                 }
+                ConstructionState.Orientation.BOARD -> {
+                    val doneInBoard = state.boardCells(state.cursor.coerceIn(0, state.boardCount - 1))
+                        .count { state.isDone(it) }
+                    "第 ${state.cursor + 1}/${state.boardCount} 板 · " +
+                        "$doneInBoard/${state.boardCells(state.cursor.coerceIn(0, state.boardCount - 1)).size} 格"
+                }
             }
-            val jumpLabel = if (colorMode) "下一色" else "跳到未完成"
+            val jumpLabel = when {
+                colorMode -> "下一色"
+                boardMode -> "下一板"
+                else -> "跳到未完成"
+            }
             val bulkLabel = when {
                 colorMode -> "完成该色"
+                boardMode -> "完成本板"
                 byRow -> "完成本行"
                 else -> "完成本列"
             }
@@ -270,6 +282,14 @@ fun ConstructionScreen(vm: AppViewModel) {
                         }
                         state.cursor = next
                     }
+                    ConstructionState.Orientation.BOARD -> {
+                        val next = state.nextIncompleteBoardCircular(state.cursor + 1)
+                        if (next < 0) {
+                            allDoneDialog = true
+                            return
+                        }
+                        state.cursor = next
+                    }
                 }
                 tick++
                 vm.saveConstructionProgress()
@@ -295,6 +315,13 @@ fun ConstructionScreen(vm: AppViewModel) {
                             }
                         }
                         advanceColorIfNeeded()
+                    }
+                    ConstructionState.Orientation.BOARD -> {
+                        val board = state.cursor.coerceIn(0, state.boardCount - 1)
+                        state.setBoardDone(board, true)
+                        // 与「下一板」同一套回绕顺序：末尾板完成后回到前面漏拼的板
+                        state.nextIncompleteBoardCircular(board + 1)
+                            ?.let { state.cursor = it }
                     }
                 }
                 tick++
@@ -333,6 +360,16 @@ fun ConstructionScreen(vm: AppViewModel) {
                     onClick = {
                         state.updateOrientation(ConstructionState.Orientation.COLOR)
                         state.cursor = colorOrder.firstOrNull() ?: 0
+                        tick++
+                        vm.saveConstructionProgress()
+                    },
+                )
+                ShChip(
+                    text = "按底板",
+                    selected = boardMode,
+                    onClick = {
+                        state.updateOrientation(ConstructionState.Orientation.BOARD)
+                        state.cursor = state.nextIncompleteBoard().takeIf { it >= 0 } ?: 0
                         tick++
                         vm.saveConstructionProgress()
                     },
@@ -512,6 +549,19 @@ fun ConstructionScreen(vm: AppViewModel) {
                         }
                     }
                 }
+            } else if (boardMode) {
+                val board = state.cursor.coerceIn(0, state.boardCount - 1)
+                val boardsX = (state.width + state.boardSide - 1) / state.boardSide
+                val x0 = (board % boardsX) * state.boardSide
+                val y0 = (board / boardsX) * state.boardSide
+                val x1 = minOf(state.width, x0 + state.boardSide)
+                val y1 = minOf(state.height, y0 + state.boardSide)
+                drawRect(
+                    color = ClayColors.BrandTeal,
+                    topLeft = Offset(origin.x + x0 * cell, origin.y + y0 * cell),
+                    size = Size((x1 - x0) * cell, (y1 - y0) * cell),
+                    style = Stroke(width = (cell / 6f).coerceIn(2f, 6f)),
+                )
             } else {
                 val byRow = state.orientation == ConstructionState.Orientation.ROW
                 val guideTopLeft = if (byRow) {

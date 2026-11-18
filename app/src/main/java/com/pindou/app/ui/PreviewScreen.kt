@@ -405,11 +405,25 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
                             runExport("PDF 打印版") {
                                 ExportService.exportPdf(
                                     context, pages, projectName, codeLabels,
+                                    pageMode = ExportService.PageMode.ROWS,
                                 )
                             }
                         },
                         modifier = Modifier.weight(1f),
                     ) { Text("PDF 打印版") }
+                    OutlinedButton(
+                        onClick = {
+                            runExport("PDF 底板版") {
+                                ExportService.exportPdf(
+                                    context, pages, projectName, codeLabels,
+                                    pageMode = ExportService.PageMode.BOARDS,
+                                )
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("PDF 底板版") }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
                     OutlinedButton(
                         onClick = {
                             runExport("CSV 清单") {

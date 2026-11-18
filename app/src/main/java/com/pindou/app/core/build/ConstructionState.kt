@@ -18,7 +18,7 @@ class ConstructionState(
     /** 当前行/列号（按 [orientation] 解释），引导视线 */
     var cursor: Int = 0,
 ) {
-    enum class Orientation { ROW, COLUMN, COLOR }
+    enum class Orientation { ROW, COLUMN, COLOR, BOARD }
 
     val pageCount: Int = pages.coerceAtLeast(1)
     var pageIndex: Int = initialPage.coerceIn(0, pageCount - 1)
@@ -117,12 +117,83 @@ class ConstructionState(
         return -1
     }
 
+    /** 底板尺寸：29×29 是国内最常用的方板；小于它的图纸自然落在一块板上。 */
+    val boardSide: Int = 29
+
+    /** 按拼装底板划的总板数（横向 × 纵向）。板序号从左上角开始按行扫描。 */
+    val boardCount: Int
+        get() = acrossBoards(width) * acrossBoards(height)
+
+    /** 当前板内格子的索引（当前页），板外格子为 -1。 */
+    fun boardCells(board: Int): IntArray {
+        if (board < 0 || board >= boardCount) return IntArray(0)
+        val boardsX = acrossBoards(width)
+        val bx = board % boardsX
+        val by = board / boardsX
+        val x0 = bx * boardSide
+        val y0 = by * boardSide
+        val x1 = minOf(width, x0 + boardSide)
+        val y1 = minOf(height, y0 + boardSide)
+        val out = ArrayList<Int>((x1 - x0).coerceAtLeast(0) * (y1 - y0).coerceAtLeast(0))
+        for (y in y0 until y1) {
+            for (x in x0 until x1) out.add(y * width + x)
+        }
+        return out.toIntArray()
+    }
+
+    /** 把任意格索引换算成底板编号；越界返回 -1。cursor 在 BOARD 模式下是板号。 */
+    fun boardOf(index: Int): Int {
+        if (index < 0 || index >= pageSize) return -1
+        val x = index % width
+        val y = index / width
+        val bx = x / boardSide
+        val by = y / boardSide
+        return by * acrossBoards(width) + bx
+    }
+
+    /** 第一个还有未拼格的底板；全部完成返回 -1。 */
+    fun nextIncompleteBoard(start: Int = 0): Int {
+        for (b in start.coerceIn(0, boardCount) until boardCount) {
+            for (i in boardCells(b)) {
+                if (!done[pageOffset + i]) return b
+            }
+        }
+        return -1
+    }
+
+    /**
+     * 从 [fromExclusive] 的下一块开始找未完成板，到末尾后回绕开头。
+     *
+     * 「下一板」与「完成本板」必须共用这一套顺序；否则完成末尾的板后
+     * 会停在已完成板上，而前面仍有漏拼板却点不动。
+     */
+    fun nextIncompleteBoardCircular(fromExclusive: Int = cursor): Int {
+        if (boardCount <= 0) return -1
+        val start = ((fromExclusive % boardCount) + boardCount) % boardCount
+        for (offset in 0 until boardCount) {
+            val board = (start + offset) % boardCount
+            if (boardCells(board).any { !done[pageOffset + it] }) return board
+        }
+        return -1
+    }
+
+    /** 整块底板标为完成/未完成，返回实际改动格数。 */
+    fun setBoardDone(board: Int, value: Boolean): Int {
+        var changed = 0
+        for (i in boardCells(board)) {
+            if (setDone(i, value)) changed++
+        }
+        return changed
+    }
+
+    private fun acrossBoards(size: Int): Int = (size + boardSide - 1) / boardSide
+
     /** 按当前方向跳到下一个未完成行/列，并更新游标；返回是否找到（按色号由界面处理） */
     fun jumpToNextIncomplete(): Boolean {
         val next = when (orientation) {
             Orientation.ROW -> nextIncompleteRow()
             Orientation.COLUMN -> nextIncompleteCol()
-            Orientation.COLOR -> return false
+            Orientation.COLOR, Orientation.BOARD -> return false
         }
         if (next < 0) return false
         cursor = next
@@ -133,7 +204,7 @@ class ConstructionState(
     /**
      * 切换引导方式（变更计数 +1 触发重绘）；与属性 setter 的 JVM 签名错开。
      *
-     * 三种模式的 cursor 语义不同（行号 / 列号 / 色号下标），切换时归零，
+     * 四种模式的 cursor 语义不同（行号 / 列号 / 色号 / 板号），切换时归零，
      * 由界面按剩余进度挑第一个可用的位置，避免拿行号当色号用。
      */
     fun updateOrientation(value: Orientation) {

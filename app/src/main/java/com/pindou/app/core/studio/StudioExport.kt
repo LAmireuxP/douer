@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Typeface
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.scale
 import com.pindou.app.core.export.ExportService
 import com.pindou.app.core.palette.BeadPalette
 import com.pindou.app.core.pattern.PatternResult
@@ -110,7 +112,7 @@ object StudioExport {
         val rows = (used.size + columns - 1) / columns
         val width = pad * 2 + columns * cellW
         val height = header + pad + rows * cellH
-        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val bmp = createBitmap(width, height)
         val canvas = Canvas(bmp)
         canvas.drawColor(0xFFFFFFFF.toInt())
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -150,7 +152,7 @@ object StudioExport {
     /** 工作区预览/缩略图用：返回 1 格 = 1 像素的位图。 */
     fun frameBitmap(engine: StudioEngine, frame: Int, transparent: Boolean = true): Bitmap {
         val argb = if (transparent) engine.renderArgb(frame) else engine.renderArgb(frame, 0xFFFFFFFF.toInt())
-        val bmp = Bitmap.createBitmap(engine.width, engine.height, Bitmap.Config.ARGB_8888)
+        val bmp = createBitmap(engine.width, engine.height)
         bmp.setPixels(argb, 0, engine.width, 0, 0, engine.width, engine.height)
         return bmp
     }
@@ -167,10 +169,10 @@ object StudioExport {
         } else {
             engine.renderArgb(frame, 0xFFFFFFFF.toInt())
         }
-        val base = Bitmap.createBitmap(engine.width, engine.height, Bitmap.Config.ARGB_8888)
+        val base = createBitmap(engine.width, engine.height)
         base.setPixels(argb, 0, engine.width, 0, 0, engine.width, engine.height)
         if (s == 1) return base
-        val scaled = Bitmap.createScaledBitmap(base, engine.width * s, engine.height * s, false)
+        val scaled = base.scale(engine.width * s, engine.height * s, false)
         if (scaled !== base) base.recycle()
         return scaled
     }

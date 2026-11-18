@@ -6,9 +6,10 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlin.math.sqrt
 
-/** 豆子规格：5mm 普通豆 / 2.6mm 小豆 */
+/** 豆子规格：5mm 普通豆 / 8mm 大颗粒 / 2.6mm 小豆 */
 enum class BeadSize(val pitchMm: Double) {
     MM5(5.0),
+    MM8(8.0),
     MM2_6(2.6);
 
     companion object {
@@ -16,6 +17,7 @@ enum class BeadSize(val pitchMm: Double) {
             entries.firstOrNull { it.name.equals(tag, ignoreCase = true) || it.pitchMm.toString() == tag }
                 ?: when (tag) {
                     "5mm" -> MM5
+                    "8mm" -> MM8
                     "2.6mm" -> MM2_6
                     else -> MM5
                 }

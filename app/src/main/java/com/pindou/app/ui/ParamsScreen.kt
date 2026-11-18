@@ -68,13 +68,14 @@ fun ParamsScreen(vm: AppViewModel) {
     var preset by remember { mutableStateOf(if (vm.gridW.toString() in GridPresets) vm.gridW.toString() else "自定义") }
     var paletteMenuOpen by remember { mutableStateOf(false) }
     var showTextEditor by remember { mutableStateOf(false) }
-    // 色卡筛选：全部 / 全色系套装 / 5mm 品牌 / 2.6mm 品牌
+    // 色卡筛选：全部 / 全色系套装 / 5mm 品牌 / 8mm 品牌 / 2.6mm 品牌
     var paletteFilter by remember { mutableStateOf("全部") }
     val allPalettes = vm.palettes
     val availablePalettes = remember(allPalettes, paletteFilter) {
         when (paletteFilter) {
             "全色系" -> allPalettes.filter { it.brand.startsWith("ALL") }
             "5mm 普通豆" -> allPalettes.filter { it.beadSize.name == "MM5" }
+            "8mm 大颗粒" -> allPalettes.filter { it.beadSize.name == "MM8" }
             "2.6mm 小豆" -> allPalettes.filter { it.beadSize.name == "MM2_6" && !it.brand.startsWith("ALL") }
             else -> allPalettes
         }
@@ -337,7 +338,7 @@ fun ParamsScreen(vm: AppViewModel) {
                     horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
                     verticalArrangement = Arrangement.spacedBy(Spacing.xs),
                 ) {
-                    listOf("全部", "全色系", "5mm 普通豆", "2.6mm 小豆").forEach { f ->
+                    listOf("全部", "全色系", "5mm 普通豆", "8mm 大颗粒", "2.6mm 小豆").forEach { f ->
                         ShChip(text = f, selected = paletteFilter == f, onClick = { paletteFilter = f })
                     }
                 }
@@ -359,7 +360,7 @@ fun ParamsScreen(vm: AppViewModel) {
                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text(palette.brandLabel, style = MaterialTheme.typography.titleSmall)
                                 Text(
-                                    "${palette.colors.size} 色 · ${if (palette.beadSize.name == "MM5") "5mm 普通豆" else "2.6mm 小豆"}",
+                                    "${palette.colors.size} 色 · ${palette.beadSize.pitchMm}mm",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -377,6 +378,9 @@ fun ParamsScreen(vm: AppViewModel) {
                                 "全色系 · 2.6mm 融合豆" to availablePalettes.filter { it.brand.startsWith("ALL") },
                                 "5mm 普通豆品牌色卡" to availablePalettes.filter {
                                     it.beadSize.name == "MM5" && !it.brand.startsWith("ALL")
+                                },
+                                "8mm 大颗粒品牌色卡" to availablePalettes.filter {
+                                    it.beadSize.name == "MM8" && !it.brand.startsWith("ALL")
                                 },
                                 "2.6mm 小豆品牌色卡" to availablePalettes.filter {
                                     it.beadSize.name == "MM2_6" && !it.brand.startsWith("ALL")

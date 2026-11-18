@@ -2,6 +2,7 @@ package com.pindou.app.core.data
 
 import android.content.Context
 import android.graphics.Bitmap
+import androidx.core.graphics.createBitmap
 import androidx.room.Room
 import androidx.room.withTransaction
 import com.pindou.app.core.export.ExportRenderer
@@ -252,7 +253,7 @@ class ProjectRepository(private val context: Context) {
             result,
             ExportRenderer.RenderOptions(cellPx = cellPx, showCodes = false, showGrid = false),
         )
-        val bmp = Bitmap.createBitmap(rendered.width, rendered.height, Bitmap.Config.ARGB_8888)
+        val bmp = createBitmap(rendered.width, rendered.height)
         bmp.setPixels(rendered.pixels, 0, rendered.width, 0, 0, rendered.width, rendered.height)
 
         val file = newThumbFile()

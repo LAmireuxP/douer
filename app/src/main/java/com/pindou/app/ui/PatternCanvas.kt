@@ -106,8 +106,8 @@ private fun clampPreview(
 fun PatternCanvas(
     result: PatternResult,
     showCodes: Boolean,
-    codeLabels: CodeLabelMode = CodeLabelMode.FULL,
     modifier: Modifier = Modifier,
+    codeLabels: CodeLabelMode = CodeLabelMode.FULL,
     cellMinPxForCodes: Float = CellCodeDrawer.MIN_CELL_PX,
 ) {
     val measurer = rememberTextMeasurer()

@@ -7,6 +7,7 @@ import android.graphics.Shader
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.core.graphics.createBitmap
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -161,11 +162,11 @@ fun StudioCanvas(
     val palette = session.palette
 
     val currentBitmap = remember(engine, engine.width, engine.height) {
-        Bitmap.createBitmap(engine.width, engine.height, Bitmap.Config.ARGB_8888)
+        createBitmap(engine.width, engine.height)
     }
     val currentImage = remember(currentBitmap) { currentBitmap.asImageBitmap() }
     val onionBitmap = remember(engine, engine.width, engine.height) {
-        Bitmap.createBitmap(engine.width, engine.height, Bitmap.Config.ARGB_8888)
+        createBitmap(engine.width, engine.height)
     }
     val onionImage = remember(onionBitmap) { onionBitmap.asImageBitmap() }
     val lastRender = remember(engine, engine.width, engine.height) { intArrayOf(-1, -1) }
@@ -174,7 +175,7 @@ fun StudioCanvas(
     val reference = remember(session.revision, engine.frameIndex) { engine.reference }
     val referenceBitmap = remember(reference) {
         reference?.let { ref ->
-            Bitmap.createBitmap(ref.width, ref.height, Bitmap.Config.ARGB_8888).apply {
+            createBitmap(ref.width, ref.height).apply {
                 setPixels(ref.argb, 0, ref.width, 0, 0, ref.width, ref.height)
             }
         }
@@ -182,7 +183,7 @@ fun StudioCanvas(
     val referenceImage = remember(referenceBitmap) { referenceBitmap?.asImageBitmap() }
 
     val checkerPaint = remember {
-        val tile = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        val tile = createBitmap(16, 16)
         val pixels = IntArray(256) { i ->
             val x = i % 16
             val y = i / 16

@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Typeface
+import androidx.core.graphics.createBitmap
 import kotlin.math.ceil
 import kotlin.math.roundToInt
 
@@ -31,7 +32,7 @@ object StudioTextRasterizer {
         val textW = lines.maxOf { paint.measureText(it) }.roundToInt().coerceAtLeast(1)
         val w = textW + scale * 2
         val h = ceil(lineHeight * lines.size).toInt() + scale * 2
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val bmp = createBitmap(w, h)
         val canvas = Canvas(bmp)
         val metrics = paint.fontMetrics
         var baseline = scale + (-metrics.ascent)

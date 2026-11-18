@@ -2,7 +2,6 @@ package com.pindou.app.ui
 
 import android.app.Application
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -60,51 +59,6 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import java.io.File
 import java.io.FileOutputStream
-
-/** 页面导航（线性流程，M5 引入项目库后再考虑导航库） */
-enum class Screen {
-    HOME, CROP, PARAMS, PREVIEW, EDITOR, STUDIO, CONSTRUCTION, CHART_CALIBRATE, PIXEL_CALIBRATE,
-}
-
-/**
- * 首页底部导航页签。
- *
- * 创建页是唯一的新建入口；项目库只负责浏览、搜索、整理已保存的图纸。
- * 两边不再各放一套「导入照片 / 空白画布」，避免同一个流程出现两个入口。
- */
-enum class HomeTab { LIBRARY, CREATE, SETTINGS }
-
-/** 编辑工具 */
-enum class EditorTool { NONE, PAINT, ERASE, PICKER, FILL, PAN, SHAPE }
-
-/** 裁剪选区模式：自由（网格跟随选区）或 1:1 正方形 */
-enum class CropAspectMode { FREE, SQUARE }
-
-/** 生成过程中的 UI 状态 */
-sealed interface GenState {
-    data object Idle : GenState
-    data class Running(val stage: GenerationStage, val progress: Float) : GenState
-    data class Done(val result: PatternResult) : GenState
-    data class Error(val message: String) : GenState
-}
-
-/**
- * 裁剪页实时网格预览：一格就是最终图纸里的一粒豆。
- *
- * [image] 是 gridW×gridH 的缩略位图，画布按选区尺寸一次 drawImage 铺开。
- * 不在 Canvas 里逐格 drawRect——56×50 是 2800 次绘制，每帧都画必然掉帧，
- * 而且位图可以复用现成的 FilterQuality.None 最近邻放大，正好是"看色块"。
- * [rect] 用来判断预览是否还对应当前选区：拖动过程中旧预览不画，
- * 松手防抖算完再出图，避免色块跟着手指歪着跑。
- */
-class CropGridPreview(
-    val rect: CropRect,
-    val gridW: Int,
-    val gridH: Int,
-    val image: Bitmap,
-    val colorCount: Int,
-    val elapsedMs: Long,
-)
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -542,52 +496,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun palettesFor(beadSizeTag: String): List<BeadPalette> =
         palettes.filter { it.beadSize.name == beadSizeTag }
 
-    private data class DecodedImage(
-        val bitmap: Bitmap,
-        val pixels: IntArray,
-        val w: Int,
-        val h: Int,
-    )
-
-    /**
-     * SAF URI → Bitmap + ARGB。先解 bounds 决定采样率，最大边压到 2048。
-     *
-     * 注意：inJustDecodeBounds 时 decodeStream 必然返回 null，不能拿它的返回值
-     * 判断流是否打开；这里单独判断 InputStream。
-     */
-    private fun decodeImage(uri: Uri): DecodedImage {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        val boundsInput = openImageInput(uri) ?: error("无法读取图片")
-        boundsInput.use { BitmapFactory.decodeStream(it, null, bounds) }
-        require(bounds.outWidth > 0 && bounds.outHeight > 0) { "图片解码失败" }
-
-        var sample = 1
-        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 2048) sample *= 2
-        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-        val bmpInput = openImageInput(uri) ?: error("无法读取图片")
-        val bmp = bmpInput.use { BitmapFactory.decodeStream(it, null, opts) }
-            ?: error("图片解码失败")
-        val pixels = IntArray(bmp.width * bmp.height)
-        bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
-        return DecodedImage(bmp, pixels, bmp.width, bmp.height)
-    }
-
-    /** MIUI 文件管理器对 openInputStream/openAssetFileDescriptor 支持不一致，两种都试。 */
-    private fun openImageInput(uri: Uri): java.io.InputStream? {
-        val resolver = getApplication<Application>().contentResolver
-        runCatching { resolver.openInputStream(uri) }
-            .onSuccess { if (it != null) return it }
-            .onFailure {
-                android.util.Log.e("PindouImage", "openInputStream failed", it)
-            }
-        runCatching { resolver.openAssetFileDescriptor(uri, "r")?.createInputStream() }
-            .onSuccess { if (it != null) return it }
-            .onFailure {
-                android.util.Log.e("PindouImage", "openAssetFileDescriptor failed", it)
-            }
-        return null
-    }
-
     /** 换图/离开当前生成流程时，先把旧的后台生成停掉，避免旧结果落库。 */
     private fun cancelGeneration() {
         generationJob?.cancel()
@@ -608,7 +516,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
-                decodeImage(uri)
+                decodeImage(getApplication(), uri)
             }.onSuccess { decoded ->
                 val bmp = decoded.bitmap
                 val pixels = decoded.pixels
@@ -1841,12 +1749,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         screen = Screen.STUDIO
     }
 
-    private fun paletteArgbs(palette: BeadPalette): IntArray =
-        IntArray(palette.colors.size) { palette.colors[it].argb }
-
-    private fun studioFile(id: Long): File =
-        File(getApplication<Application>().filesDir, "studio/project_$id.studio")
-
     /**
      * 把工作区落盘：每帧拍平后作为项目的一页，sidecar 保留完整图层树。
      * 返回项目 id；失败返回 null 并把原因写进 lastError。
@@ -1882,7 +1784,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             )
             existing
         }
-        val file = studioFile(id)
+        val file = studioFile(getApplication(), id)
         if (!StudioCodec.save(engine, file)) {
             lastError = "分层工程保存失败：${file.absolutePath}"
             return@withContext null
@@ -2099,7 +2001,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
             if (id != null) {
                 withContext(Dispatchers.IO) {
-                    val file = studioFile(id)
+                    val file = studioFile(getApplication(), id)
                     if (StudioCodec.save(target, file)) {
                         repository.setStudioPath(id, file.absolutePath)
                     }
@@ -2136,7 +2038,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val pages = session.engine.frames.indices.map { session.engine.composite(it) }
             repository.setStudioPath(id, null)
             withContext(Dispatchers.IO) {
-                runCatching { studioFile(id).delete() }
+                runCatching { studioFile(getApplication(), id).delete() }
             }
             projectPages = pages
             currentProjectId = id
@@ -2563,15 +2465,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 height = result.height,
                 done = done,
                 pages = pageCount,
-                // 0=按行 1=按列 2=按色号；cursor 的语义随模式变化（行号/列号/色号下标）
+                // 0=按行 1=按列 2=按色号 3=按底板；cursor 语义随模式变化
                 orientation = when (entity?.buildOrientation ?: 0) {
                     1 -> ConstructionState.Orientation.COLUMN
                     2 -> ConstructionState.Orientation.COLOR
+                    3 -> ConstructionState.Orientation.BOARD
                     else -> ConstructionState.Orientation.ROW
                 },
                 cursor = if (validStored) {
                     val upper = when (entity?.buildOrientation ?: 0) {
                         2 -> (result.palette.colors.size - 1).coerceAtLeast(0)
+                        3 -> ((result.width + 28) / 29 * ((result.height + 28) / 29) - 1)
+                            .coerceAtLeast(0)
                         1 -> (result.width - 1).coerceAtLeast(0)
                         else -> (result.height - 1).coerceAtLeast(0)
                     }
@@ -3023,15 +2928,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 val resolver = getApplication<Application>().contentResolver
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-                require(bounds.outWidth > 0 && bounds.outHeight > 0) { "图片解码失败" }
-
-                var sample = 1
-                while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 2600) sample *= 2
-                val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-                val bmp = resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
-                    ?: error("图片解码失败")
+                val bmp = decodeScaled(
+                    openInput = { runCatching { resolver.openInputStream(uri) }.getOrNull() },
+                    maxSide = 2600,
+                )
                 val px = IntArray(bmp.width * bmp.height)
                 bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
                 Triple(bmp, px, intArrayOf(bmp.width, bmp.height))
@@ -3283,13 +3183,4 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun paletteFor(brand: String, beadSizeTag: String): BeadPalette? =
         PaletteAssets.pick(palettes, brand, beadSizeTag)
 
-    private fun chunkInts(arr: IntArray, size: Int): List<IntArray> =
-        List((arr.size + size - 1) / size) { i ->
-            arr.copyOfRange(i * size, minOf((i + 1) * size, arr.size))
-        }
-
-    private fun chunkBooleans(arr: BooleanArray, size: Int): List<BooleanArray> =
-        List((arr.size + size - 1) / size) { i ->
-            arr.copyOfRange(i * size, minOf((i + 1) * size, arr.size))
-        }
 }

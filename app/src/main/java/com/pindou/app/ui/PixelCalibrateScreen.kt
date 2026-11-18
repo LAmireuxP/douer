@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -58,7 +59,7 @@ fun PixelCalibrateScreen(vm: AppViewModel) {
 
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     var sheetHeightPx by remember { mutableIntStateOf(0) }
-    var zoom by remember(bitmap) { mutableStateOf(1f) }
+    var zoom by remember(bitmap) { mutableFloatStateOf(1f) }
     var pan by remember(bitmap) { mutableStateOf(Offset.Zero) }
     var showPreview by remember(bitmap) { mutableStateOf(false) }
 

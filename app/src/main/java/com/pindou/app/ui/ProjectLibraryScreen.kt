@@ -198,28 +198,14 @@ fun ProjectLibraryScreen(
                                     style = MaterialTheme.typography.displayLarge,
                                     color = MaterialTheme.colorScheme.onBackground,
                                 )
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
+                                // 标题下只保留图纸总数；多选入口走长按卡片/右上角「⋯」，
+                                // 顶栏不再单独摆一个「多选」链接，避免和标题抢视线。
+                                Text(
+                                    "${projects.size} 张图纸",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(top = 2.dp),
-                                ) {
-                                    Text(
-                                        "${projects.size} 份图纸 · 保存在本机",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                    if (projects.isNotEmpty()) {
-                                        Text(
-                                            "多选",
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = ClayColors.PrimaryInk,
-                                            modifier = Modifier
-                                                .padding(start = 8.dp)
-                                                .clip(RoundedCornerShape(6.dp))
-                                                .clickable { enterSelection(emptySet()) }
-                                                .padding(horizontal = 6.dp, vertical = 2.dp),
-                                        )
-                                    }
-                                }
+                                )
                             }
                             OutlinedButton(
                                 onClick = onPickBpat,

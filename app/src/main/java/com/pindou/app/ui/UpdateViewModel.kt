@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.core.content.edit
 import androidx.core.content.pm.PackageInfoCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -69,7 +70,7 @@ class UpdateViewModel(app: Application) : AndroidViewModel(app) {
                     state = if (auto) State.Idle else State.Error(result.message)
                 }
             }
-            prefs.edit().putLong(KEY_LAST_CHECK, System.currentTimeMillis()).apply()
+            prefs.edit { putLong(KEY_LAST_CHECK, System.currentTimeMillis()) }
         }
     }
 
