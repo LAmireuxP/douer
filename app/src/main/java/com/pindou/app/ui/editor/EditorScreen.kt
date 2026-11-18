@@ -669,528 +669,64 @@ fun EditorScreen(vm: AppViewModel) {
 
     // 色卡选择
     if (showPaletteSheet) {
-        val filtered = remember(palette.brand, paletteQuery) {
-            palette.colors.withIndex().filter { (_, entry) ->
-                paletteQuery.isBlank() ||
-                    entry.code.contains(paletteQuery, ignoreCase = true) ||
-                    entry.name?.contains(paletteQuery, ignoreCase = true) == true
-            }
-        }
-        // 色卡要在弹层里来回滑：每个色块只留一个 Canvas 节点。原来的
-        // Column/Box/背景/描边/Text 五层布局，在首次滑到新行时每格都要
-        // 走一遍测量和组合，正是那一下的顿挫来源。
-        val primaryColor = MaterialTheme.colorScheme.primary
-        ModalBottomSheet(onDismissRequest = { showPaletteSheet = false }) {
-            Column(
-                Modifier
-                    .padding(horizontal = Spacing.md)
-                    .padding(bottom = Spacing.xl),
-                verticalArrangement = Arrangement.spacedBy(Spacing.sm),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .background(Color(currentEntry.argb), RoundedCornerShape(10.dp))
-                            .border(
-                                1.dp,
-                                MaterialTheme.colorScheme.outline,
-                                RoundedCornerShape(10.dp),
-                            ),
-                    )
-                    Column(Modifier.padding(start = Spacing.sm)) {
-                        Text(currentEntry.code, style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            currentEntry.name?.ifBlank { palette.brandLabel } ?: palette.brandLabel,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        "${palette.colors.size} 色",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                ShSearchField(
-                    value = paletteQuery,
-                    onValueChange = { paletteQuery = it },
-                    placeholder = "搜索色号或颜色名",
-                    modifier = Modifier.fillMaxWidth(),
-                    trailing = {
-                        if (paletteQuery.isNotEmpty()) {
-                            IconButton(onClick = { paletteQuery = "" }) {
-                                Icon(
-                                    MorphIcons.X,
-                                    contentDescription = "清空搜索",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                            }
-                        }
-                    },
-                )
-
-                if (vm.editorRecentColors.isNotEmpty()) {
-                    Text(
-                        "最近使用",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        vm.editorRecentColors.take(8).forEach { index ->
-                            val entry = palette.colors.getOrNull(index) ?: return@forEach
-                            Box(
-                                modifier = Modifier
-                                    .size(34.dp)
-                                    .background(Color(entry.argb), RoundedCornerShape(9.dp))
-                                    .border(
-                                        width = if (index == safeColorIndex) 2.dp else 1.dp,
-                                        color = if (index == safeColorIndex) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.outline
-                                        },
-                                        shape = RoundedCornerShape(9.dp),
-                                    )
-                                    .clickable {
-                                        vm.selectEditorColor(index)
-                                        showPaletteSheet = false
-                                    },
-                            )
-                        }
-                    }
-                }
-
-                Text(
-                    if (paletteQuery.isBlank()) {
-                        "点击颜色后自动切回画笔"
-                    } else {
-                        "匹配 ${filtered.size} / ${palette.colors.size} 色"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-
-                if (filtered.isEmpty()) {
-                    // 空结果要给出可执行出口，而不是留一块空白
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 220.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                    ) {
-                        Text(
-                            "没有匹配的色号",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        TextButton(onClick = { paletteQuery = "" }) { Text("清空搜索") }
-                    }
-                } else {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(5),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 220.dp, max = 430.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(
-                            count = filtered.size,
-                            key = { filtered[it].index },
-                            contentType = { "swatch" },
-                        ) { pos ->
-                            val (index, entry) = filtered[pos]
-                            PaletteSwatch(
-                                code = entry.code,
-                                name = entry.name,
-                                argb = entry.argb,
-                                selected = index == safeColorIndex,
-                                measurer = swatchMeasurer,
-                                textStyle = swatchTextStyle,
-                                textCache = swatchTextCache,
-                                primaryColor = primaryColor,
-                                onClick = {
-                                    vm.selectEditorColor(index)
-                                    showPaletteSheet = false
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-        }
+        EditorPaletteSheet(
+            vm = vm,
+            palette = palette,
+            currentEntry = currentEntry,
+            safeColorIndex = safeColorIndex,
+            query = paletteQuery,
+            onQueryChange = { paletteQuery = it },
+            measurer = swatchMeasurer,
+            textStyle = swatchTextStyle,
+            textCache = swatchTextCache,
+            onDismiss = { showPaletteSheet = false },
+        )
     }
 
     // ⋮ 更多
     if (showMenu) {
-        ModalBottomSheet(onDismissRequest = { showMenu = false }) {
-            Column(
-                Modifier
-                    .padding(horizontal = Spacing.md)
-                    .padding(bottom = Spacing.xl),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                Text(
-                    "更多操作",
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.padding(bottom = Spacing.xs),
-                )
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = Spacing.xs, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("参考图对比", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            if (vm.refBitmap == null) "当前图纸没有原图" else "在原图上对位涂色",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Switch(
-                        checked = vm.showRefOverlay,
-                        onCheckedChange = { vm.toggleRefOverlay() },
-                        enabled = vm.refBitmap != null,
-                    )
-                }
-                if (vm.showRefOverlay && vm.refBitmap != null) {
-                    Text(
-                        "透明度 ${(vm.refOpacity * 100).roundToInt()}%",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Slider(
-                        value = vm.refOpacity,
-                        onValueChange = { vm.updateRefOpacity(it) },
-                        valueRange = 0.05f..1f,
-                    )
-                }
-                MenuItemRow(
-                    icon = MorphIcons.Brush,
-                    title = "在画像素中编辑",
-                    subtitle = "保留当前所有页，转成帧/图层工作区",
-                ) {
-                    showMenu = false
-                    vm.editInStudio()
-                }
-                MenuItemRow(
-                    icon = MorphIcons.PaintBucket,
-                    title = "色板管理",
-                    subtitle = "换品牌 / 合并相近色",
-                ) {
-                    showMenu = false
-                    showManageSheet = true
-                }
-                MenuItemRow(
-                    icon = MorphIcons.Palette,
-                    title = "替换相似颜色",
-                    subtitle = "同色系并成一个色号，减少换豆",
-                ) {
-                    showMenu = false
-                    // 默认源色取「当前画笔色」；画笔停在一个没用过的色号上时，
-                    // 直接跳到用量最少的已用色——否则一进来就是「0 格 / 没有可替换的格子」，
-                    // 用户还得自己翻色卡找哪个色真正在图上。
-                    val cur = vm.editorColor.coerceIn(0, palette.colors.lastIndex)
-                    val use = ColorReplaceOps.usage(engine.pages, palette.colors.size)
-                    replaceSource = if (use.getOrElse(cur) { 0 } > 0) {
-                        cur
-                    } else {
-                        use.indices.filter { use[it] > 0 }.minByOrNull { use[it] } ?: cur
-                    }
-                    showReplaceSheet = true
-                }
-                MenuItemRow(
-                    icon = MorphIcons.Copy,
-                    title = "复制当前页",
-                    subtitle = "新页继承当前页内容与锁定状态",
-                ) {
-                    vm.addEditorPage(true)
-                    showMenu = false
-                }
-                MenuItemRow(
-                    icon = MorphIcons.Trash,
-                    title = "删除当前页",
-                    subtitle = if (engine.pageCount <= 1) "至少保留一页" else "可撤销",
-                    enabled = engine.pageCount > 1,
-                ) {
-                    vm.removeEditorPage(engine.pageIndex)
-                    showMenu = false
-                }
-                MenuItemRow(
-                    icon = MorphIcons.SwapHorizontal,
-                    title = "改尺寸",
-                    subtitle = "所有页内容居中保留",
-                ) {
-                    showMenu = false
-                    showResizeDialog = true
-                }
-                MenuItemRow(
-                    icon = MorphIcons.Grid,
-                    title = "裁剪图纸",
-                    subtitle = "按坐标裁掉四周多余的格子",
-                ) {
-                    showMenu = false
-                    showCropDialog = true
-                }
-                MenuItemRow(
-                    icon = MorphIcons.FlipHorizontal,
-                    title = "水平翻转",
-                    subtitle = "左右镜像当前所有页，可撤销",
-                ) {
-                    vm.flipEditorHorizontal()
-                    showMenu = false
-                }
-                MenuItemRow(
-                    icon = MorphIcons.SwapHorizontal,
-                    title = "垂直翻转",
-                    subtitle = "上下镜像当前所有页，可撤销",
-                ) {
-                    vm.flipEditorVertical()
-                    showMenu = false
-                }
-                MenuItemRow(
-                    icon = MorphIcons.RotateCcw,
-                    title = "左转 90°",
-                    subtitle = "宽高互换，所有页一起旋转",
-                ) {
-                    vm.rotateEditor(clockwise = false)
-                    showMenu = false
-                }
-                MenuItemRow(
-                    icon = MorphIcons.RotateCw,
-                    title = "右转 90°",
-                    subtitle = "宽高互换，所有页一起旋转",
-                ) {
-                    vm.rotateEditor(clockwise = true)
-                    showMenu = false
-                }
-                MenuItemRow(
-                    icon = MorphIcons.Download,
-                    title = "导出 .bpat 图纸",
-                    subtitle = "包含全部页、色卡与锁定状态",
-                ) {
-                    showMenu = false
-                    vm.exportBpatFile()
-                }
-            }
-        }
+        EditorMenuSheet(
+            vm = vm,
+            palette = palette,
+            engine = engine,
+            onDismiss = { showMenu = false },
+            onOpenManage = { showManageSheet = true },
+            onOpenReplace = {
+                replaceSource = it
+                showReplaceSheet = true
+            },
+            onOpenResize = { showResizeDialog = true },
+            onOpenCrop = { showCropDialog = true },
+        )
     }
 
     // 改尺寸
     if (showResizeDialog) {
-        var w by remember { mutableStateOf(engine.width.toString()) }
-        var h by remember { mutableStateOf(engine.height.toString()) }
-        AlertDialog(
-            onDismissRequest = { showResizeDialog = false },
-            title = { Text("改尺寸") },
-            text = {
-                Column {
-                    Text(
-                        "内容居中保留；施工进度会因尺寸变化作废",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
-                        modifier = Modifier.padding(top = Spacing.sm),
-                    ) {
-                        OutlinedTextField(
-                            value = w,
-                            onValueChange = { w = it.filter { ch -> ch.isDigit() }.take(3) },
-                            label = { Text("宽") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                        )
-                        OutlinedTextField(
-                            value = h,
-                            onValueChange = { h = it.filter { ch -> ch.isDigit() }.take(3) },
-                            label = { Text("高") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                Button(onClick = {
-                    val nw = w.toIntOrNull() ?: 0
-                    val nh = h.toIntOrNull() ?: 0
-                    if (nw in 5..500 && nh in 5..500) {
-                        vm.resizeEditor(nw, nh)
-                        showResizeDialog = false
-                    }
-                }) { Text("应用") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showResizeDialog = false }) { Text("取消") }
-            },
+        EditorResizeDialog(
+            vm = vm,
+            initialWidth = engine.width,
+            initialHeight = engine.height,
+            onDismiss = { showResizeDialog = false },
         )
     }
 
-    // 编辑时裁剪：输入左上角与目标尺寸，范围必须落在当前图纸内
+    // 裁剪图纸
     if (showCropDialog) {
-        var leftText by remember { mutableStateOf("1") }
-        var topText by remember { mutableStateOf("1") }
-        var w by remember { mutableStateOf(engine.width.toString()) }
-        var h by remember { mutableStateOf(engine.height.toString()) }
-        val l = leftText.toIntOrNull()
-        val t = topText.toIntOrNull()
-        val nw = w.toIntOrNull()
-        val nh = h.toIntOrNull()
-        val valid = l != null && t != null && nw != null && nh != null &&
-            l >= 1 && t >= 1 && nw in 5..500 && nh in 5..500 &&
-            l - 1 + nw <= engine.width && t - 1 + nh <= engine.height
-        AlertDialog(
-            onDismissRequest = { showCropDialog = false },
-            title = { Text("裁剪图纸") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-                    Text(
-                        "当前 ${engine.width}×${engine.height}；左上角从 1 开始数，保留 " +
-                            "(${l ?: "?"}, ${t ?: "?"}) 起的区域",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-                        OutlinedTextField(
-                            value = leftText,
-                            onValueChange = { leftText = it.filter { c -> c.isDigit() }.take(3) },
-                            label = { Text("左") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                        )
-                        OutlinedTextField(
-                            value = topText,
-                            onValueChange = { topText = it.filter { c -> c.isDigit() }.take(3) },
-                            label = { Text("上") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-                        OutlinedTextField(
-                            value = w,
-                            onValueChange = { w = it.filter { c -> c.isDigit() }.take(3) },
-                            label = { Text("宽") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                        )
-                        OutlinedTextField(
-                            value = h,
-                            onValueChange = { h = it.filter { c -> c.isDigit() }.take(3) },
-                            label = { Text("高") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                    Text(
-                        if (valid) {
-                            "结果 ${nw}×${nh}，所有页同步裁剪，可撤销"
-                        } else {
-                            "范围无效：宽高 5..500，且不能超出当前图纸"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (valid) {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        } else {
-                            MaterialTheme.colorScheme.error
-                        },
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (l != null && t != null && nw != null && nh != null && valid) {
-                            vm.cropEditor(l - 1, t - 1, nw, nh)
-                            showCropDialog = false
-                        }
-                    },
-                    enabled = valid,
-                ) { Text("裁剪") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCropDialog = false }) { Text("取消") }
-            },
+        EditorCropDialog(
+            vm = vm,
+            initialWidth = engine.width,
+            initialHeight = engine.height,
+            onDismiss = { showCropDialog = false },
         )
     }
 
     // 色板管理
     if (showManageSheet) {
-        var mergeThreshold by remember { mutableFloatStateOf(3f) }
-        ModalBottomSheet(onDismissRequest = { showManageSheet = false }) {
-            Column(
-                Modifier
-                    .padding(Spacing.lg)
-                    .padding(bottom = Spacing.xl),
-                verticalArrangement = Arrangement.spacedBy(Spacing.md),
-            ) {
-                Text("换品牌色卡", style = MaterialTheme.typography.titleLarge)
-                Text(
-                    "全图按最近色重映射到所选品牌（仅列同规格）",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
-                    verticalArrangement = Arrangement.spacedBy(Spacing.xs),
-                ) {
-                    vm.palettes
-                        .filter { it.beadSize == palette.beadSize }
-                        .forEach { p ->
-                            val selected = p.brand == palette.brand
-                            TextButton(
-                                onClick = {
-                                    vm.applyPaletteRemap(p)
-                                    showManageSheet = false
-                                },
-                                colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
-                                    contentColor = if (selected) {
-                                        ClayColors.PrimaryInk
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    },
-                                ),
-                            ) { Text(if (selected) "✓${p.brandLabel}" else p.brandLabel) }
-                        }
-                }
-
-                Text("合并相近色", style = MaterialTheme.typography.titleLarge)
-                Text(
-                    "ΔE 阈值 %.1f：阈值越大合并越激进".format(mergeThreshold),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Slider(
-                    value = mergeThreshold,
-                    onValueChange = { mergeThreshold = it },
-                    valueRange = 1f..10f,
-                )
-                Button(
-                    onClick = {
-                        vm.mergeSimilarEditorColorsWithReport(mergeThreshold.toDouble())
-                        showManageSheet = false
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("按当前阈值合并") }
-            }
-        }
+        EditorManageSheet(
+            vm = vm,
+            palette = palette,
+            onDismiss = { showManageSheet = false },
+        )
     }
 
     // 替换相似颜色
