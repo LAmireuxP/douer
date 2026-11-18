@@ -5,13 +5,22 @@ package com.pindou.app.ui
 import android.graphics.BitmapFactory
 import android.util.LruCache
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -70,6 +79,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pindou.app.core.data.ProjectSummary
 import com.pindou.app.ui.icon.MorphIcons
+import com.pindou.app.ui.motion.AnimatedNumber
+import com.pindou.app.ui.motion.LocalMotion
+import com.pindou.app.ui.motion.Motion
+import com.pindou.app.ui.motion.pressScale
 import com.pindou.app.ui.shadcn.Button
 import com.pindou.app.ui.shadcn.OutlinedButton
 import com.pindou.app.ui.shadcn.ShCard
@@ -201,12 +214,21 @@ fun ProjectLibraryScreen(
                                 )
                                 // 标题下只保留图纸总数；多选入口走长按卡片/右上角「⋯」，
                                 // 顶栏不再单独摆一个「多选」链接，避免和标题抢视线。
-                                Text(
-                                    "${projects.size} 张图纸",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                Row(
                                     modifier = Modifier.padding(top = 2.dp),
-                                )
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    AnimatedNumber(
+                                        value = "${projects.size}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        " 张图纸",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                             OutlinedButton(
                                 onClick = onPickBpat,
@@ -724,10 +746,16 @@ private fun SelectionAction(
     danger: Boolean = false,
 ) {
     val tint = if (danger) MaterialTheme.colorScheme.error else ClayColors.BodyStrong
+    val interaction = remember { MutableInteractionSource() }
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(11.dp))
-            .clickable(onClick = onClick)
+            .pressScale(interaction, pressedScale = 0.94f)
+            .clickable(
+                interactionSource = interaction,
+                indication = LocalIndication.current,
+                onClick = onClick,
+            )
             .padding(vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -759,7 +787,12 @@ private fun ProjectCard(
 ) {
     val shape = RoundedCornerShape(12.dp)
     val thumb by rememberProjectThumb(project)
-    val edge = if (selected) ClayColors.Primary else MaterialTheme.colorScheme.outline
+    val edge by animateColorAsState(
+        targetValue = if (selected) ClayColors.Primary else MaterialTheme.colorScheme.outline,
+        animationSpec = tween(Motion.FAST),
+        label = "projectCardEdge",
+    )
+    val interaction = remember { MutableInteractionSource() }
 
     Column(
         modifier = Modifier
@@ -767,7 +800,10 @@ private fun ProjectCard(
             .clip(shape)
             .background(MaterialTheme.colorScheme.surface)
             .border(if (selected) 2.dp else 1.dp, edge, shape)
+            .pressScale(interaction, pressedScale = 0.97f)
             .combinedClickable(
+                interactionSource = interaction,
+                indication = LocalIndication.current,
                 onClick = onClick,
                 onLongClick = onLongClick,
             ),
@@ -874,6 +910,9 @@ private fun ProjectCard(
 
 @Composable
 private fun SelectionBadge(selected: Boolean, modifier: Modifier = Modifier) {
+    val motion = LocalMotion.current
+    val quick = if (motion.enabled) Motion.FAST else 0
+    val base = if (motion.enabled) Motion.BASE else 0
     Box(
         modifier = modifier
             .size(24.dp)
@@ -886,7 +925,11 @@ private fun SelectionBadge(selected: Boolean, modifier: Modifier = Modifier) {
             ),
         contentAlignment = Alignment.Center,
     ) {
-        if (selected) {
+        AnimatedVisibility(
+            visible = selected,
+            enter = fadeIn(tween(quick)) + scaleIn(tween(base), initialScale = 0.55f),
+            exit = fadeOut(tween(quick)) + scaleOut(tween(quick), targetScale = 0.55f),
+        ) {
             Icon(
                 MorphIcons.Check,
                 contentDescription = "已选中",
@@ -1079,11 +1122,17 @@ private fun SheetActionRow(
     },
 ) {
     val labelColor = if (danger) MaterialTheme.colorScheme.error else ClayColors.BodyStrong
+    val interaction = remember { MutableInteractionSource() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(50.dp)
-            .clickable(onClick = onClick)
+            .pressScale(interaction, pressedScale = 0.98f)
+            .clickable(
+                interactionSource = interaction,
+                indication = LocalIndication.current,
+                onClick = onClick,
+            )
             .padding(horizontal = 20.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

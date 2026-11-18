@@ -1,8 +1,17 @@
 package com.pindou.app.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,6 +47,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pindou.app.core.settings.GlassAppearance
 import com.pindou.app.ui.icon.MorphIcons
+import com.pindou.app.ui.motion.LocalMotion
+import com.pindou.app.ui.motion.Motion
+import com.pindou.app.ui.motion.StaggeredAppear
+import com.pindou.app.ui.motion.pressScale
 import com.pindou.app.ui.theme.AppTheme
 import com.pindou.app.ui.theme.AppThemes
 import com.pindou.app.ui.theme.ClayColors
@@ -134,24 +147,32 @@ fun AppearanceCard(
                 }
         }
 
-        // —— 主题包：2 列卡片，每张 4 色小样 + 名称 + 一句定位 ——
+        // —— 主题包：设计语言与渐变配色分组，每组 2 列卡片 ——
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            AppThemes.all.chunked(2).forEach { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    row.forEach { theme ->
-                        ThemeTile(
-                            theme = theme,
-                            selected = theme.id == AppThemes.byId(themeSkin).id,
-                            modifier = Modifier.weight(1f),
-                        ) { onThemeSkin(theme.id) }
-                    }
-                    if (row.size == 1) Spacer(Modifier.weight(1f))
-                }
+            val languageThemes = AppThemes.all.filter { it.gradient == null }
+            val gradientThemes = AppThemes.all.filter { it.gradient != null }
+            ThemeGroupLabel("设计语言", languageThemes.size)
+            ThemeRows(
+                themes = languageThemes,
+                selectedId = AppThemes.byId(themeSkin).id,
+                startIndex = 0,
+                onSelect = onThemeSkin,
+            )
+            if (gradientThemes.isNotEmpty()) {
+                Spacer(Modifier.height(2.dp))
+                ThemeGroupLabel("渐变配色", gradientThemes.size)
+                ThemeRows(
+                    themes = gradientThemes,
+                    selectedId = AppThemes.byId(themeSkin).id,
+                    startIndex = languageThemes.size,
+                    onSelect = onThemeSkin,
+                )
             }
         }
 
         Text(
-            "主题包只改配色与圆角；图标、排版、功能不变。参考 awesome-design-md 的设计语言描述。",
+            "主题包只改配色与圆角；图标、排版、功能不变。" +
+                "上组参考 awesome-design-md，下组来自你给的渐变配色。",
             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -300,7 +321,58 @@ fun AppearanceCard(
     }
 }
 
-/** 主题卡：四色小样 + 名称 + 一句定位 + 参考来源。 */
+@Composable
+private fun ThemeGroupLabel(title: String, count: Int) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            "$count 套",
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+        )
+    }
+}
+
+@Composable
+private fun ThemeRows(
+    themes: List<AppTheme>,
+    selectedId: String,
+    startIndex: Int,
+    onSelect: (String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        themes.chunked(2).forEachIndexed { rowIndex, row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                row.forEachIndexed { column, theme ->
+                    StaggeredAppear(
+                        index = startIndex + rowIndex * 2 + column,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        ThemeTile(
+                            theme = theme,
+                            selected = theme.id == selectedId,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { onSelect(theme.id) }
+                    }
+                }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+/** 主题卡：设计语言显示四色小样，渐变配色显示一条渐变条。 */
 @Composable
 private fun ThemeTile(
     theme: AppTheme,
@@ -308,50 +380,114 @@ private fun ThemeTile(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
+    val interaction = remember { MutableInteractionSource() }
+    val motion = LocalMotion.current
+    val quick = if (motion.enabled) Motion.FAST else 0
+    val base = if (motion.enabled) Motion.BASE else 0
+    val fill by animateColorAsState(
+        targetValue = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f),
+        animationSpec = tween(Motion.FAST),
+        label = "themeTileFill",
+    )
+    val edge by animateColorAsState(
+        targetValue = if (selected) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+        animationSpec = tween(Motion.FAST),
+        label = "themeTileEdge",
+    )
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
-            .background(
-                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
-                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f),
-            )
+            .background(fill)
             .border(
                 if (selected) 1.5.dp else 1.dp,
-                if (selected) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+                edge,
                 RoundedCornerShape(12.dp),
             )
-            .clickable(onClick = onClick)
+            .pressScale(interaction, pressedScale = 0.97f)
+            .clickable(
+                interactionSource = interaction,
+                indication = LocalIndication.current,
+                onClick = onClick,
+            )
             .padding(9.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            theme.swatch.forEach { color ->
-                Box(
-                    Modifier
-                        .size(16.dp)
-                        .clip(RoundedCornerShape(5.dp))
-                        .background(color)
-                        .border(0.5.dp, Color.White.copy(alpha = 0.35f), RoundedCornerShape(5.dp)),
+        val gradient = theme.gradient
+        if (gradient != null) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(22.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Brush.linearGradient(listOf(gradient.first, gradient.second)))
+                    .border(
+                        0.5.dp,
+                        Color.White.copy(alpha = 0.40f),
+                        RoundedCornerShape(6.dp),
+                    ),
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    theme.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (selected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
                 )
+                Spacer(Modifier.weight(1f))
+                AnimatedVisibility(
+                    visible = selected,
+                    enter = fadeIn(tween(quick)) +
+                        scaleIn(tween(base), initialScale = 0.55f),
+                    exit = fadeOut(tween(quick)) +
+                        scaleOut(tween(quick), targetScale = 0.55f),
+                ) {
+                    Icon(
+                        MorphIcons.Check,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
             }
-            Spacer(Modifier.weight(1f))
-            if (selected) {
-                Icon(
-                    MorphIcons.Check,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(14.dp),
-                )
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                theme.swatch.forEach { color ->
+                    Box(
+                        Modifier
+                            .size(16.dp)
+                            .clip(RoundedCornerShape(5.dp))
+                            .background(color)
+                            .border(0.5.dp, Color.White.copy(alpha = 0.35f), RoundedCornerShape(5.dp)),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                AnimatedVisibility(
+                    visible = selected,
+                    enter = fadeIn(tween(quick)) +
+                        scaleIn(tween(base), initialScale = 0.55f),
+                    exit = fadeOut(tween(quick)) +
+                        scaleOut(tween(quick), targetScale = 0.55f),
+                ) {
+                    Icon(
+                        MorphIcons.Check,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
             }
+            Text(
+                theme.name,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurface,
+            )
         }
-        Text(
-            theme.name,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) MaterialTheme.colorScheme.primary
-            else MaterialTheme.colorScheme.onSurface,
-        )
         Text(
             theme.tagline,
             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),

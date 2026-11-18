@@ -33,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -48,6 +49,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pindou.app.core.display.RefreshRateController
 import com.pindou.app.core.update.UpdateManifest
+import com.pindou.app.ui.motion.AnimatedNumber
+import com.pindou.app.ui.motion.shake
 import com.pindou.app.ui.shadcn.ShCard
 import com.pindou.app.ui.shadcn.ShChip
 import com.pindou.app.ui.shadcn.ShPageHeader
@@ -235,8 +238,8 @@ fun SettingsScreen(vm: AppViewModel) {
             Column(Modifier.padding(Spacing.md), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
                 Text("生成统计", style = MaterialTheme.typography.titleLarge)
                 Row(verticalAlignment = androidx.compose.ui.Alignment.Bottom) {
-                    Text(
-                        "${vm.stats.total}",
+                    AnimatedNumber(
+                        value = "${vm.stats.total}",
                         style = MaterialTheme.typography.displaySmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.primary,
@@ -383,8 +386,8 @@ private fun StatRow(label: String, count: Int) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f),
         )
-        Text(
-            "$count",
+        AnimatedNumber(
+            value = "$count",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
         )
@@ -446,6 +449,10 @@ private fun UpdateDialog(
 ) {
     val context = LocalContext.current
     val downloading = state is UpdateViewModel.State.Downloading
+    var errorShake by remember { mutableIntStateOf(0) }
+    LaunchedEffect(state) {
+        if (state is UpdateViewModel.State.Error) errorShake++
+    }
     AlertDialog(
         onDismissRequest = { if (!downloading) onDismiss() },
         title = {
@@ -464,6 +471,7 @@ private fun UpdateDialog(
         text = {
             Column(
                 modifier = Modifier
+                    .shake(errorShake)
                     .heightIn(max = 360.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(Spacing.xs),

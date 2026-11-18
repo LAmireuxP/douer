@@ -45,6 +45,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.pindou.app.core.export.ExportService
 import com.pindou.app.core.pattern.CodeLabelMode
+import com.pindou.app.ui.motion.AnimatedNumber
 import com.pindou.app.ui.shadcn.Button
 import com.pindou.app.ui.shadcn.OutlinedButton
 import com.pindou.app.ui.shadcn.ShCard
@@ -557,7 +558,10 @@ private fun Stat(value: String, label: String, modifier: Modifier = Modifier) {
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(value, style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
+        AnimatedNumber(
+            value = value,
+            style = MaterialTheme.typography.titleLarge,
+        )
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,

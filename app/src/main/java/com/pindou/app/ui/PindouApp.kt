@@ -7,15 +7,25 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -54,7 +64,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
@@ -75,6 +84,10 @@ import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.highlight.HighlightStyle
 import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
+import com.pindou.app.ui.motion.AnimatedIconSwap
+import com.pindou.app.ui.motion.LocalMotion
+import com.pindou.app.ui.motion.Motion
+import com.pindou.app.ui.motion.pressScale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -95,6 +108,7 @@ private val Tabs = listOf(
 fun PindouApp(vm: AppViewModel) {
     val snackbarHostState = remember { SnackbarHostState() }
     val pendingUndo = vm.deleteUndo
+    val appMotion = LocalMotion.current
 
     // 删除撤销：Snackbar 带 action，用户点「撤销」就回插；10 秒到时或
     // 被下一条 Snackbar 顶掉，就确认删除并清 sidecar。
@@ -229,11 +243,29 @@ fun PindouApp(vm: AppViewModel) {
                         shadowElevation = 8.dp,
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
                     ) {
-                        Text(
-                            data.visuals.message,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                        )
+                        AnimatedContent(
+                            targetState = data.visuals.message,
+                            transitionSpec = {
+                                if (!appMotion.enabled) {
+                                    fadeIn(tween(0)) togetherWith fadeOut(tween(0))
+                                } else {
+                                    (
+                                        fadeIn(tween(Motion.FAST)) +
+                                            slideInVertically(tween(Motion.BASE)) { it / 2 }
+                                        ) togetherWith (
+                                        fadeOut(tween(Motion.FAST / 2)) +
+                                            slideOutVertically(tween(Motion.FAST)) { -it / 2 }
+                                        )
+                                }
+                            },
+                            label = "snackbarText",
+                        ) { message ->
+                            Text(
+                                message,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                            )
+                        }
                     }
                 }
             }
@@ -270,13 +302,30 @@ fun PindouApp(vm: AppViewModel) {
             // 玻璃底栏叠在内容之上，列表从半透明背景后面滚过。
             // 项目库多选时让位给批量操作条，避免误触「创建」丢掉整批选择。
             val selectionBarActive = vm.homeTab == HomeTab.LIBRARY && vm.librarySelecting
-            if (vm.screen == Screen.HOME && !selectionBarActive) {
+            val bottomBarVisible = vm.screen == Screen.HOME && !selectionBarActive
+            val motion = LocalMotion.current
+            AnimatedVisibility(
+                visible = bottomBarVisible,
+                modifier = Modifier.align(Alignment.BottomCenter),
+                enter = if (motion.enabled) {
+                    slideInVertically(tween(Motion.EMPHASIS)) { it } +
+                        fadeIn(tween(Motion.BASE))
+                } else {
+                    androidx.compose.animation.EnterTransition.None
+                },
+                exit = if (motion.enabled) {
+                    slideOutVertically(tween(Motion.BASE)) { it } +
+                        fadeOut(tween(Motion.FAST))
+                } else {
+                    androidx.compose.animation.ExitTransition.None
+                },
+            ) {
                 GlassBottomBar(
                     backdrop = backdrop,
                     glass = vm.settings.glass,
                     current = vm.homeTab,
                     onSelect = vm::selectHomeTab,
-                    modifier = Modifier.align(Alignment.BottomCenter),
+                    modifier = Modifier,
                 )
             }
         }
@@ -291,19 +340,44 @@ private fun HomeScreen(
     onPickBpat: () -> Unit,
     onPickChart: () -> Unit,
 ) {
-    when (vm.homeTab) {
-        HomeTab.LIBRARY -> ProjectLibraryScreen(
-            vm,
-            onGoCreate = { vm.selectHomeTab(HomeTab.CREATE) },
-            onPickBpat = onPickBpat,
-        )
-        HomeTab.CREATE -> CreateScreen(
-            vm,
-            onPickPhoto = onPickImage,
-            onPickPixel = onPickPixel,
-            onPickChart = onPickChart,
-        )
-        HomeTab.SETTINGS -> SettingsScreen(vm)
+    val motion = LocalMotion.current
+    AnimatedContent(
+        targetState = vm.homeTab,
+        modifier = Modifier.fillMaxSize(),
+        transitionSpec = {
+            if (!motion.enabled) {
+                fadeIn(tween(0)) togetherWith fadeOut(tween(0))
+            } else {
+                val forward = targetState.ordinal > initialState.ordinal
+                (
+                    fadeIn(tween(Motion.BASE)) +
+                        slideInHorizontally(tween(Motion.EMPHASIS)) {
+                            if (forward) it / 24 else -it / 24
+                        }
+                    ) togetherWith (
+                    fadeOut(tween(Motion.FAST)) +
+                        slideOutHorizontally(tween(Motion.BASE)) {
+                            if (forward) -it / 32 else it / 32
+                        }
+                    )
+            }
+        },
+        label = "homeTabPage",
+    ) { tab ->
+        when (tab) {
+            HomeTab.LIBRARY -> ProjectLibraryScreen(
+                vm,
+                onGoCreate = { vm.selectHomeTab(HomeTab.CREATE) },
+                onPickBpat = onPickBpat,
+            )
+            HomeTab.CREATE -> CreateScreen(
+                vm,
+                onPickPhoto = onPickImage,
+                onPickPixel = onPickPixel,
+                onPickChart = onPickChart,
+            )
+            HomeTab.SETTINGS -> SettingsScreen(vm)
+        }
     }
 }
 
@@ -328,6 +402,7 @@ private fun GlassBottomBar(
     onSelect: (HomeTab) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val motion = LocalMotion.current
     val shape = RoundedCornerShape(glass.cornerDp.dp)
     val dark = MaterialTheme.colorScheme.surface.luminance() < 0.35f
     val accent = MaterialTheme.colorScheme.primary
@@ -413,10 +488,14 @@ private fun GlassBottomBar(
             // 一块玻璃片在三个槽位间移动，比每个 tab 各闪一下更像液体
             val pillX by animateDpAsState(
                 targetValue = slot * selectedIndex,
-                animationSpec = spring(
-                    dampingRatio = 0.82f,
-                    stiffness = Spring.StiffnessMediumLow,
-                ),
+                animationSpec = if (motion.enabled) {
+                    spring(
+                        dampingRatio = 0.82f,
+                        stiffness = Spring.StiffnessMediumLow,
+                    )
+                } else {
+                    snap()
+                },
                 label = "glassTabPill",
             )
             Box(
@@ -476,24 +555,19 @@ private fun GlassBottomBar(
             ) {
                 Tabs.forEach { tab ->
                     val selected = current == tab.target
-                    val tint = if (selected) selectedInk else idleInk
-                    val interaction = remember { MutableInteractionSource() }
-                    val pressed by interaction.collectIsPressedAsState()
-                    val pressScale by animateFloatAsState(
-                        targetValue = if (pressed) 0.92f else 1f,
-                        animationSpec = spring(stiffness = Spring.StiffnessMedium),
-                        label = "tabPress",
+                    val tint by animateColorAsState(
+                        targetValue = if (selected) selectedInk else idleInk,
+                        animationSpec = tween(Motion.FAST),
+                        label = "tabTint",
                     )
+                    val interaction = remember { MutableInteractionSource() }
 
                     Column(
                         modifier = Modifier
                             .width(slot)
                             .fillMaxHeight()
-                            .graphicsLayer {
-                                scaleX = pressScale
-                                scaleY = pressScale
-                            }
                             .clip(RoundedCornerShape(24.dp))
+                            .pressScale(interaction, pressedScale = 0.92f)
                             .clickable(
                                 interactionSource = interaction,
                                 indication = null,
@@ -501,11 +575,13 @@ private fun GlassBottomBar(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
-                        Icon(
-                            imageVector = if (selected) tab.filled else tab.outlined,
+                        AnimatedIconSwap(
+                            selected = selected,
+                            outlined = tab.outlined,
+                            filled = tab.filled,
                             contentDescription = tab.label,
                             tint = tint,
-                            modifier = Modifier.size(21.dp),
+                            size = 21.dp,
                         )
                         Spacer(Modifier.height(2.dp))
                         Text(

@@ -1,11 +1,14 @@
 package com.pindou.app.ui.shadcn
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import com.pindou.app.ui.icon.MorphIcons
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -30,6 +33,8 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton as MaterialTextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,6 +42,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import com.pindou.app.ui.motion.Motion
+import com.pindou.app.ui.motion.pressScale
 
 /**
  * shadcn/ui 组件层。
@@ -93,16 +100,19 @@ fun Button(
     } else {
         null
     }
+    val resolvedInteraction = interactionSource ?: remember { MutableInteractionSource() }
     androidx.compose.material3.Button(
         onClick = onClick,
-        modifier = modifier.defaultMinSize(minHeight = 40.dp),
+        modifier = modifier
+            .defaultMinSize(minHeight = 40.dp)
+            .pressScale(resolvedInteraction, enabled = enabled),
         enabled = enabled,
         shape = shape,
         colors = resolvedColors,
         elevation = elevation ?: ButtonDefaults.buttonElevation(defaultElevation = 0.dp),
         border = resolvedBorder,
         contentPadding = contentPadding,
-        interactionSource = interactionSource,
+        interactionSource = resolvedInteraction,
         content = content,
     )
 }
@@ -121,9 +131,12 @@ fun OutlinedButton(
     interactionSource: MutableInteractionSource? = null,
     content: @Composable RowScope.() -> Unit,
 ) {
+    val resolvedInteraction = interactionSource ?: remember { MutableInteractionSource() }
     androidx.compose.material3.OutlinedButton(
         onClick = onClick,
-        modifier = modifier.defaultMinSize(minHeight = 40.dp),
+        modifier = modifier
+            .defaultMinSize(minHeight = 40.dp)
+            .pressScale(resolvedInteraction, enabled = enabled),
         enabled = enabled,
         shape = shape,
         colors = colors ?: ButtonDefaults.outlinedButtonColors(
@@ -132,7 +145,7 @@ fun OutlinedButton(
         elevation = elevation,
         border = border,
         contentPadding = contentPadding,
-        interactionSource = interactionSource,
+        interactionSource = resolvedInteraction,
         content = content,
     )
 }
@@ -154,16 +167,19 @@ fun TextButton(
     interactionSource: MutableInteractionSource? = null,
     content: @Composable RowScope.() -> Unit,
 ) {
+    val resolvedInteraction = interactionSource ?: remember { MutableInteractionSource() }
     MaterialTextButton(
         onClick = onClick,
-        modifier = modifier.defaultMinSize(minHeight = 40.dp),
+        modifier = modifier
+            .defaultMinSize(minHeight = 40.dp)
+            .pressScale(resolvedInteraction, enabled = enabled),
         enabled = enabled,
         shape = shape,
         colors = colors,
         elevation = elevation,
         border = border,
         contentPadding = contentPadding,
-        interactionSource = interactionSource,
+        interactionSource = resolvedInteraction,
         content = content,
     )
 }
@@ -176,12 +192,25 @@ fun ShCard(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val shape = RoundedCornerShape(12.dp)
+    val interaction = remember { MutableInteractionSource() }
     Column(
         modifier = modifier
             .clip(shape)
             .background(MaterialTheme.colorScheme.surface)
             .border(1.dp, MaterialTheme.colorScheme.outline, shape)
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+            .then(
+                if (onClick != null) {
+                    Modifier
+                        .pressScale(interaction)
+                        .clickable(
+                            interactionSource = interaction,
+                            indication = LocalIndication.current,
+                            onClick = onClick,
+                        )
+                } else {
+                    Modifier
+                },
+            ),
         content = content,
     )
 }
@@ -250,12 +279,34 @@ fun ShChip(
     leading: ImageVector? = null,
 ) {
     val shape = RoundedCornerShape(9999.dp)
+    val interaction = remember { MutableInteractionSource() }
+    val fill by animateColorAsState(
+        targetValue = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+        animationSpec = tween(Motion.FAST),
+        label = "chipFill",
+    )
+    val edge by animateColorAsState(
+        targetValue = if (selected) Color.Transparent else MaterialTheme.colorScheme.outline,
+        animationSpec = tween(Motion.FAST),
+        label = "chipEdge",
+    )
+    val ink by animateColorAsState(
+        targetValue = if (selected) MaterialTheme.colorScheme.onPrimary
+        else MaterialTheme.colorScheme.onSurfaceVariant,
+        animationSpec = tween(Motion.FAST),
+        label = "chipInk",
+    )
     Row(
         modifier = modifier
             .clip(shape)
-            .background(if (selected) MaterialTheme.colorScheme.primary else Color.Transparent)
-            .border(1.dp, if (selected) Color.Transparent else MaterialTheme.colorScheme.outline, shape)
-            .clickable(onClick = onClick)
+            .background(fill)
+            .border(1.dp, edge, shape)
+            .pressScale(interaction, pressedScale = 0.94f)
+            .clickable(
+                interactionSource = interaction,
+                indication = LocalIndication.current,
+                onClick = onClick,
+            )
             // 横向 padding 收到 11dp：一行能多放一个 chip，裁剪页的三行折行
             // 就是被 14dp 的留白挤出来的
             .padding(horizontal = 11.dp, vertical = 6.dp),
@@ -265,8 +316,7 @@ fun ShChip(
             Icon(
                 imageVector = leading,
                 contentDescription = null,
-                tint = if (selected) MaterialTheme.colorScheme.onPrimary
-                else MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = ink,
                 modifier = Modifier.size(12.dp),
             )
             Spacer(Modifier.width(4.dp))
@@ -274,7 +324,7 @@ fun ShChip(
         Text(
             text,
             style = MaterialTheme.typography.labelMedium,
-            color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+            color = ink,
         )
     }
 }

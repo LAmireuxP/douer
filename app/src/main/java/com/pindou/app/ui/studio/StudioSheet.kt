@@ -3,8 +3,10 @@
 package com.pindou.app.ui.studio
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,6 +39,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,6 +51,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pindou.app.ui.icon.MorphIcons
+import com.pindou.app.ui.motion.PanelReveal
+import com.pindou.app.ui.motion.pressScale
 import com.pindou.app.ui.theme.Spacing
 
 /**
@@ -92,11 +97,12 @@ fun StudioSheet(
             }
         },
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 640.dp),
-        ) {
+        PanelReveal(Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 640.dp),
+            ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -158,6 +164,7 @@ fun StudioSheet(
             } else {
                 Spacer(Modifier.navigationBarsPadding())
             }
+            }
         }
     }
 }
@@ -218,6 +225,7 @@ fun FlowRowScope.SheetTile(
     danger: Boolean = false,
     onClick: () -> Unit,
 ) {
+    val interaction = remember { MutableInteractionSource() }
     val tint = when {
         !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
         danger -> MaterialTheme.colorScheme.error
@@ -243,7 +251,13 @@ fun FlowRowScope.SheetTile(
                     Modifier
                 },
             )
-            .clickable(enabled = enabled, onClick = onClick)
+            .pressScale(interaction, enabled = enabled, pressedScale = 0.94f)
+            .clickable(
+                interactionSource = interaction,
+                indication = LocalIndication.current,
+                enabled = enabled,
+                onClick = onClick,
+            )
             .padding(vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
@@ -283,6 +297,7 @@ fun SheetRow(
     danger: Boolean = false,
     onClick: (() -> Unit)? = null,
 ) {
+    val interaction = remember { MutableInteractionSource() }
     val bg = when {
         selected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
         else -> Color.Transparent
@@ -292,7 +307,19 @@ fun SheetRow(
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(bg)
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .then(
+                if (onClick != null) {
+                    Modifier
+                        .pressScale(interaction, pressedScale = 0.97f)
+                        .clickable(
+                            interactionSource = interaction,
+                            indication = LocalIndication.current,
+                            onClick = onClick,
+                        )
+                } else {
+                    Modifier
+                },
+            )
             .padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -380,6 +407,7 @@ fun <T> SheetSegmented(
     ) {
         options.forEach { option ->
             val active = option == selected
+            val interaction = remember { MutableInteractionSource() }
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -389,7 +417,11 @@ fun <T> SheetSegmented(
                         if (active) MaterialTheme.colorScheme.primary
                         else Color.Transparent,
                     )
-                    .clickable { onSelect(option) },
+                    .pressScale(interaction, pressedScale = 0.95f)
+                    .clickable(
+                        interactionSource = interaction,
+                        indication = LocalIndication.current,
+                    ) { onSelect(option) },
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
@@ -442,15 +474,18 @@ fun SheetPrimaryButton(
     enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
+    val interaction = remember { MutableInteractionSource() }
     Button(
         onClick = onClick,
         enabled = enabled,
         modifier = modifier
             .fillMaxWidth()
-            .height(46.dp),
+            .height(46.dp)
+            .pressScale(interaction, enabled = enabled),
         shape = RoundedCornerShape(12.dp),
         contentPadding = PaddingValues(horizontal = 16.dp),
         border = if (enabled) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        interactionSource = interaction,
     ) {
         if (icon != null) {
             Icon(icon, contentDescription = null, modifier = Modifier.size(17.dp))

@@ -1,13 +1,19 @@
 package com.pindou.app.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
+import com.pindou.app.ui.motion.LocalMotion
+import com.pindou.app.ui.motion.Motion
 
 /**
  * 把一套 [Palette] 映射到 Material3 的 colorScheme。
@@ -85,6 +91,41 @@ private fun Palette.toDarkScheme() = darkColorScheme(
     onErrorContainer = onDark,
 )
 
+/**
+ * 主题切换用颜色过渡而不是整页缩放。
+ *
+ * 大块背景、卡面、正文、主色、描边一起做 260ms 颜色插值，属于
+ * prefers-reduced-motion 里的 Tier 3（不造成前庭不适）；系统移除动画时
+ * 直接落到目标色。只动画这一组高频 token，其余 30 多个 token 保持原样，
+ * 避免一次主题切换把整棵树的重绘面铺得过大。
+ */
+@Composable
+private fun ColorScheme.withMotion(): ColorScheme {
+    val motion = LocalMotion.current
+    if (!motion.enabled) return this
+    val spec = tween<Color>(Motion.EMPHASIS)
+    val animatedPrimary by animateColorAsState(primary, spec, label = "themePrimary")
+    val animatedOnPrimary by animateColorAsState(onPrimary, spec, label = "themeOnPrimary")
+    val animatedBackground by animateColorAsState(background, spec, label = "themeBackground")
+    val animatedOnBackground by animateColorAsState(onBackground, spec, label = "themeOnBackground")
+    val animatedSurface by animateColorAsState(surface, spec, label = "themeSurface")
+    val animatedOnSurface by animateColorAsState(onSurface, spec, label = "themeOnSurface")
+    val animatedSurfaceVariant by animateColorAsState(surfaceVariant, spec, label = "themeSurfaceVariant")
+    val animatedOnSurfaceVariant by animateColorAsState(onSurfaceVariant, spec, label = "themeOnSurfaceVariant")
+    val animatedOutline by animateColorAsState(outline, spec, label = "themeOutline")
+    return copy(
+        primary = animatedPrimary,
+        onPrimary = animatedOnPrimary,
+        background = animatedBackground,
+        onBackground = animatedOnBackground,
+        surface = animatedSurface,
+        onSurface = animatedOnSurface,
+        surfaceVariant = animatedSurfaceVariant,
+        onSurfaceVariant = animatedOnSurfaceVariant,
+        outline = animatedOutline,
+    )
+}
+
 @Composable
 fun PindouTheme(
     appTheme: AppTheme = AppThemes.Douer,
@@ -92,7 +133,8 @@ fun PindouTheme(
     content: @Composable () -> Unit,
 ) {
     val palette = appTheme.palette(darkTheme)
-    val scheme = if (darkTheme) palette.toDarkScheme() else palette.toLightScheme()
+    val baseScheme = if (darkTheme) palette.toDarkScheme() else palette.toLightScheme()
+    val scheme = baseScheme.withMotion()
     val shapes = ClayShapesOf(appTheme.style)
 
     CompositionLocalProvider(

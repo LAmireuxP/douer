@@ -10,8 +10,8 @@ import org.junit.Test
 class AppThemesTest {
 
     @Test
-    fun `八套主题 id 唯一且可回查`() {
-        assertEquals(8, AppThemes.all.size)
+    fun `十六套主题 id 唯一且可回查`() {
+        assertEquals(16, AppThemes.all.size)
         assertEquals(AppThemes.all.size, AppThemes.all.map { it.id }.distinct().size)
         AppThemes.all.forEach { theme ->
             assertEquals(theme, AppThemes.byId(theme.id))
@@ -70,6 +70,31 @@ class AppThemesTest {
         assertTrue(AppThemes.Airbnb.style.pillButtons)
         assertTrue(AppThemes.Spotify.style.button.value > 100f)
         assertTrue(AppThemes.Linear.style.button.value < 20f)
+    }
+
+    @Test
+    fun `渐变主题恰好八套且原有主题没有渐变`() {
+        assertEquals(8, AppThemes.gradients.size)
+        assertEquals(
+            (1..8).map { "grad%02d".format(it) },
+            AppThemes.gradients.map { it.id },
+        )
+        AppThemes.gradients.forEach { theme ->
+            val gradient = theme.gradient
+            assertNotNull("${theme.id} 应提供渐变", gradient)
+            assertTrue(
+                "${theme.id} 渐变两端颜色不应相同",
+                gradient?.first != gradient?.second,
+            )
+        }
+        AppThemes.all.take(8).forEach { theme ->
+            assertEquals("${theme.id} 不应有渐变", null, theme.gradient)
+        }
+        assertEquals(
+            listOf("douer", "spotify", "stripe", "linear", "notion", "apple", "claude", "airbnb"),
+            AppThemes.all.take(8).map { it.id },
+        )
+        assertEquals(AppThemes.gradients, AppThemes.all.drop(8))
     }
 
     /** WCAG 相对亮度对比度，只用于断言按钮可读性。 */

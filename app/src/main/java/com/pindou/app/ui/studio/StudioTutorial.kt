@@ -2,8 +2,11 @@ package com.pindou.app.ui.studio
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -32,6 +35,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,6 +62,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pindou.app.ui.icon.MorphIcons
+import com.pindou.app.ui.motion.LocalMotion
+import com.pindou.app.ui.motion.Motion
 import com.pindou.app.ui.theme.Spacing
 import kotlin.math.roundToInt
 
@@ -169,6 +175,7 @@ fun StudioTourOverlay(
     val page = steps[safeStep]
     val density = LocalDensity.current
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.35f
+    val motion = LocalMotion.current
 
     BackHandler(onBack = onDismiss)
 
@@ -279,6 +286,20 @@ fun StudioTourOverlay(
 
         val scrim = Color.Black.copy(alpha = if (isDark) 0.66f else 0.50f)
         val accent = MaterialTheme.colorScheme.primary
+        // 步骤切换只让内容淡入 + 轻抬，Surface 的布局高度从第一帧就是满的，
+        // 避免 onSizeChanged 先收到 0 再跳回真实高度导致卡片位置抖一下。
+        var cardShown by remember(safeStep) { mutableStateOf(!motion.enabled) }
+        LaunchedEffect(safeStep) { cardShown = true }
+        val cardAlpha by animateFloatAsState(
+            targetValue = if (cardShown) 1f else 0f,
+            animationSpec = tween(if (motion.enabled) Motion.BASE else 0),
+            label = "tourCardAlpha",
+        )
+        val cardShift by animateFloatAsState(
+            targetValue = if (cardShown) 0f else 12f,
+            animationSpec = tween(if (motion.enabled) Motion.BASE else 0),
+            label = "tourCardShift",
+        )
 
         // 全屏吃点击，防止引导期间误触画布；Canvas 负责挖洞和描边
         Box(
@@ -334,7 +355,15 @@ fun StudioTourOverlay(
             shadowElevation = 20.dp,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)),
         ) {
-            Column(Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.md)) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .graphicsLayer {
+                        alpha = cardAlpha
+                        translationY = cardShift
+                    }
+                    .padding(horizontal = Spacing.lg, vertical = Spacing.md),
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -401,12 +430,24 @@ fun StudioTourOverlay(
                     horizontalArrangement = Arrangement.spacedBy(5.dp),
                 ) {
                     repeat(steps.size) { index ->
+                        val indicatorWidth by animateDpAsState(
+                            targetValue = if (index == safeStep) 16.dp else 6.dp,
+                            animationSpec = if (motion.enabled) {
+                                spring(
+                                    dampingRatio = 0.82f,
+                                    stiffness = Spring.StiffnessMediumLow,
+                                )
+                            } else {
+                                snap()
+                            },
+                            label = "tourStepIndicator",
+                        )
                         Box(
                             modifier = Modifier
-                                .size(if (index == safeStep) 16.dp else 6.dp, 6.dp)
+                                .size(indicatorWidth, 6.dp)
                                 .background(
                                     if (index == safeStep) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.outline,
+                                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.28f),
                                     RoundedCornerShape(999.dp),
                                 ),
                         )
