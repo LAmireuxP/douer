@@ -219,15 +219,24 @@ internal fun CalibrationGuide(
     }
 }
 
-/** 说明文字里给关键操作加主色，和像素校准页保持同一阅读节奏。 */
-internal fun calibrationGuideText(prefix: String, accent: String, suffix: String): AnnotatedString =
-    buildAnnotatedString {
+/**
+ * 说明文字里给关键操作加主色，和像素校准页保持同一阅读节奏。
+ *
+ * 必须 @Composable：主色现在来自 CompositionLocal（可切换主题），
+ * 不再是编译期常量。
+ */
+@Composable
+internal fun calibrationGuideText(prefix: String, accent: String, suffix: String): AnnotatedString {
+    val accentColor = ClayColors.PrimaryInk
+    return buildAnnotatedString {
         append(prefix)
-        withStyle(SpanStyle(color = ClayColors.PrimaryInk, fontWeight = FontWeight.SemiBold)) {
+        withStyle(SpanStyle(color = accentColor, fontWeight = FontWeight.SemiBold)) {
             append(accent)
         }
         append(suffix)
     }
+}
+
 
 /** 底部浮层：圆角、阴影、拖动条、左右 20dp 内边距，两个模块共用。 */
 @Composable

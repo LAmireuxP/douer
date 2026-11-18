@@ -228,6 +228,8 @@ fun StudioCanvas(
     val textAtState by rememberUpdatedState(onTextAt)
     val pickState by rememberUpdatedState(onPickColor)
     val messageState by rememberUpdatedState(onMessage)
+    // Canvas 的 draw lambda 不是 @Composable：主题底色在组合阶段读一次
+    val stageColor = ClayColors.Stage
 
     Canvas(
         modifier = modifier
@@ -555,7 +557,7 @@ fun StudioCanvas(
         if (cell <= 0f) return@Canvas
         val origin = drawOrigin(canvas, state, engine)
 
-        drawRect(ClayColors.Stage)
+        drawRect(stageColor)
 
         // 棋盘格只铺画布范围，用 BitmapShader 平铺，不按格循环
         drawIntoCanvas { c ->

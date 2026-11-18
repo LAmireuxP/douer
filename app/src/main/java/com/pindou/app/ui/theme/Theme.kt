@@ -5,87 +5,105 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 
-private val LightColorScheme = lightColorScheme(
-    primary = ClayColors.Primary,
-    onPrimary = ClayColors.OnPrimary,
-    primaryContainer = ClayColors.TintGreen,
-    onPrimaryContainer = Color(0xFF11395C),
-    secondary = ClayColors.SurfaceSoft,
-    onSecondary = ClayColors.Ink,
-    secondaryContainer = ClayColors.TintGreen,
-    onSecondaryContainer = Color(0xFF11395C),
-    tertiary = ClayColors.BrandTeal,
-    onTertiary = Color(0xFFFFFFFF),
-    tertiaryContainer = ClayColors.TintMint,
-    onTertiaryContainer = Color(0xFF123B33),
-    background = ClayColors.Canvas,
-    onBackground = ClayColors.Ink,
-    surface = ClayColors.SurfaceCard,
-    onSurface = ClayColors.Ink,
-    surfaceVariant = ClayColors.SurfaceSoft,
-    onSurfaceVariant = ClayColors.Muted,
-    surfaceContainerLowest = Color(0xFFFFFFFF),
-    surfaceContainerLow = ClayColors.Canvas,
-    surfaceContainer = Color(0xFFFFFFFF),
-    surfaceContainerHigh = ClayColors.SurfaceSoft,
-    surfaceContainerHighest = ClayColors.SurfaceStrong,
-    inverseSurface = ClayColors.SurfaceDark,
-    inverseOnSurface = ClayColors.Canvas,
-    inversePrimary = Color(0xFFA9D7FF),
-    outline = ClayColors.Hairline,
-    outlineVariant = ClayColors.HairlineSoft,
-    error = ClayColors.Error,
-    onError = Color(0xFFFFFFFF),
-    errorContainer = Color(0xFFF7E4E0),
-    onErrorContainer = Color(0xFF7A2C1E),
+/**
+ * 把一套 [Palette] 映射到 Material3 的 colorScheme。
+ *
+ * 映射规则写死在这里，主题只需要给 Palette：新增主题时不会出现
+ * 「MaterialTheme.primary 和 ClayColors.Primary 不是同一个颜色」的错位。
+ */
+private fun Palette.toLightScheme() = lightColorScheme(
+    primary = primary,
+    onPrimary = onPrimary,
+    primaryContainer = tintGreen,
+    onPrimaryContainer = lerp(ink, primary, 0.45f),
+    secondary = surfaceSoft,
+    onSecondary = ink,
+    secondaryContainer = tintGreen,
+    onSecondaryContainer = lerp(ink, primary, 0.45f),
+    tertiary = brandTeal,
+    onTertiary = Color.White,
+    tertiaryContainer = tintMint,
+    onTertiaryContainer = lerp(ink, brandTeal, 0.40f),
+    background = canvas,
+    onBackground = ink,
+    surface = surfaceCard,
+    onSurface = ink,
+    surfaceVariant = surfaceSoft,
+    onSurfaceVariant = muted,
+    surfaceContainerLowest = Color.White,
+    surfaceContainerLow = canvas,
+    surfaceContainer = surfaceCard,
+    surfaceContainerHigh = surfaceSoft,
+    surfaceContainerHighest = surfaceStrong,
+    inverseSurface = surfaceDark,
+    inverseOnSurface = canvas,
+    inversePrimary = primaryInk,
+    outline = hairline,
+    outlineVariant = hairlineSoft,
+    error = error,
+    onError = Color.White,
+    errorContainer = mix(primaryDisabled, error, 0.10f),
+    onErrorContainer = lerp(error, Color.Black, 0.35f),
 )
 
-private val DarkColorScheme = darkColorScheme(
-    primary = Color(0xFF7EC4FF),
-    onPrimary = Color(0xFF08243A),
-    primaryContainer = Color(0xFF1B3B54),
-    onPrimaryContainer = Color(0xFFCFE8FF),
-    secondary = ClayColors.SurfaceDarkElevated,
-    onSecondary = ClayColors.OnDark,
-    secondaryContainer = Color(0xFF1D3346),
-    onSecondaryContainer = Color(0xFFCFE8FF),
-    tertiary = Color(0xFF63B59A),
+private fun Palette.toDarkScheme() = darkColorScheme(
+    primary = primary,
+    onPrimary = onPrimary,
+    primaryContainer = tintSky,
+    onPrimaryContainer = primaryInk,
+    secondary = surfaceSoft,
+    onSecondary = onDark,
+    secondaryContainer = surfaceStrong,
+    onSecondaryContainer = onDark,
+    tertiary = brandTeal,
     onTertiary = Color(0xFF0A2620),
-    tertiaryContainer = Color(0xFF163A31),
-    onTertiaryContainer = Color(0xFFCBEBDF),
-    background = ClayColors.SurfaceDark,
-    onBackground = ClayColors.OnDark,
-    surface = ClayColors.SurfaceDark,
-    onSurface = ClayColors.OnDark,
-    surfaceVariant = ClayColors.SurfaceDarkElevated,
-    onSurfaceVariant = ClayColors.OnDarkSoft,
-    surfaceContainerLowest = Color(0xFF0A0F13),
-    surfaceContainerLow = Color(0xFF121A20),
-    surfaceContainer = ClayColors.SurfaceDarkElevated,
-    surfaceContainerHigh = Color(0xFF232D38),
-    surfaceContainerHighest = Color(0xFF2C3743),
-    inverseSurface = ClayColors.Canvas,
-    inverseOnSurface = ClayColors.Ink,
-    inversePrimary = ClayColors.Primary,
-    outline = Color(0xFF39434E),
-    outlineVariant = Color(0xFF232B34),
-    error = Color(0xFFE08A78),
+    tertiaryContainer = tintMint,
+    onTertiaryContainer = onDark,
+    background = canvas,
+    onBackground = onDark,
+    surface = surfaceCard,
+    onSurface = onDark,
+    surfaceVariant = surfaceSoft,
+    onSurfaceVariant = onDarkSoft,
+    surfaceContainerLowest = lerp(canvas, Color.Black, 0.35f),
+    surfaceContainerLow = canvas,
+    surfaceContainer = surfaceCard,
+    surfaceContainerHigh = surfaceStrong,
+    surfaceContainerHighest = lerp(surfaceStrong, onDark, 0.06f),
+    inverseSurface = canvas,
+    inverseOnSurface = ink,
+    inversePrimary = primaryActive,
+    outline = hairline,
+    outlineVariant = hairlineSoft,
+    error = error,
     onError = Color(0xFF3A1209),
-    errorContainer = Color(0xFF4C1A12),
-    onErrorContainer = Color(0xFFF6D4CC),
+    errorContainer = lerp(canvas, error, 0.30f),
+    onErrorContainer = onDark,
 )
 
 @Composable
 fun PindouTheme(
+    appTheme: AppTheme = AppThemes.Douer,
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
-    MaterialTheme(
-        colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme,
-        typography = ClayTypography,
-        shapes = ClayShapes,
-        content = content,
-    )
+    val palette = appTheme.palette(darkTheme)
+    val scheme = if (darkTheme) palette.toDarkScheme() else palette.toLightScheme()
+    val shapes = ClayShapesOf(appTheme.style)
+
+    CompositionLocalProvider(
+        LocalPalette provides palette,
+        LocalShapeStyle provides appTheme.style,
+    ) {
+        MaterialTheme(
+            colorScheme = scheme,
+            typography = ClayTypography,
+            shapes = shapes,
+            content = content,
+        )
+    }
 }

@@ -69,6 +69,9 @@ internal fun EditorCanvas(
     val measurer = rememberTextMeasurer()
     val rulerTextColor = MaterialTheme.colorScheme.onSurfaceVariant
     val rulerBandColor = MaterialTheme.colorScheme.surface
+    // Canvas 的 draw lambda 不是 @Composable，主题色必须在这里先读出来。
+    val pickerAccent = ClayColors.BrandTeal
+    val highlightAccent = ClayColors.BrandBlue
     val rulerCache = remember {
         mutableMapOf<Pair<String, Int>, androidx.compose.ui.text.TextLayoutResult>()
     }
@@ -385,7 +388,7 @@ internal fun EditorCanvas(
 
         if (tool == EditorTool.PICKER) {
             drawRect(
-                color = ClayColors.BrandTeal.copy(alpha = 0.5f),
+                color = pickerAccent.copy(alpha = 0.5f),
                 topLeft = Offset.Zero,
                 size = Size(size.width, 6f),
             )
@@ -399,7 +402,7 @@ internal fun EditorCanvas(
             val top = origin.y + hy * cell
             val stroke = (cell * 0.10f).coerceIn(2f, 6f)
             drawRect(
-                color = ClayColors.BrandBlue.copy(alpha = 0.95f),
+                color = highlightAccent.copy(alpha = 0.95f),
                 topLeft = Offset(left - stroke / 2f, top - stroke / 2f),
                 size = Size(cell + stroke, cell + stroke),
                 style = Stroke(width = stroke),

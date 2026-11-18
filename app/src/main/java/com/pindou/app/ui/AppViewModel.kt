@@ -48,6 +48,7 @@ import com.pindou.app.core.studio.StudioEngine
 import com.pindou.app.core.studio.StudioFrame
 import com.pindou.app.core.studio.StudioLayer
 import com.pindou.app.core.settings.GlassAppearance
+import com.pindou.app.ui.theme.AppThemes
 import com.pindou.app.ui.pixel.PixelCalibrationController
 import com.pindou.app.ui.library.ProjectLibraryController
 import com.pindou.app.ui.studio.StudioPersistence
@@ -1606,6 +1607,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (settings.glass == safe) return
         settings = settings.copy(glass = safe)
         viewModelScope.launch { settingsStore.setGlassAppearance(safe) }
+    }
+
+    /** 界面主题包：写内存立即重绘，再落盘；未知 id 回落到默认配色。 */
+    fun setThemeSkin(id: String) {
+        val theme = AppThemes.byId(id)
+        if (settings.themeSkin == theme.id) return
+        settings = settings.copy(themeSkin = theme.id)
+        viewModelScope.launch { settingsStore.setThemeSkin(theme.id) }
     }
 
     fun resetStudioRailPositions() {

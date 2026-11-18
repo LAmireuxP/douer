@@ -440,6 +440,8 @@ fun ConstructionScreen(vm: AppViewModel) {
         }
     }
 
+    // Canvas 的 draw lambda 不是 @Composable：主题色在组合阶段先读出来
+    val guideAccent = ClayColors.BrandTeal
     val canvasContent: @Composable (Modifier) -> Unit = { modifier ->
         // 网格画布：单指点击切换完成状态，双指缩放平移
         Canvas(
@@ -541,7 +543,7 @@ fun ConstructionScreen(vm: AppViewModel) {
                             val i = y * state.width + x
                             if (cells.getOrNull(i) != activeColor || state.isDone(i)) continue
                             drawRect(
-                                color = ClayColors.BrandTeal,
+                            color = guideAccent,
                                 topLeft = Offset(origin.x + x * cell, origin.y + y * cell),
                                 size = Size(cell, cell),
                                 style = Stroke(width = w),
@@ -557,7 +559,7 @@ fun ConstructionScreen(vm: AppViewModel) {
                 val x1 = minOf(state.width, x0 + state.boardSide)
                 val y1 = minOf(state.height, y0 + state.boardSide)
                 drawRect(
-                    color = ClayColors.BrandTeal,
+                    color = guideAccent,
                     topLeft = Offset(origin.x + x0 * cell, origin.y + y0 * cell),
                     size = Size((x1 - x0) * cell, (y1 - y0) * cell),
                     style = Stroke(width = (cell / 6f).coerceIn(2f, 6f)),
@@ -571,7 +573,7 @@ fun ConstructionScreen(vm: AppViewModel) {
                 }
                 val guideSize = if (byRow) Size(state.width * cell, cell) else Size(cell, state.height * cell)
                 drawRect(
-                    color = ClayColors.BrandTeal,
+                    color = guideAccent,
                     topLeft = guideTopLeft,
                     size = guideSize,
                     style = Stroke(width = (cell / 12f).coerceIn(1.5f, 4f)),

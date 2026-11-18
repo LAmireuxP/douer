@@ -16,6 +16,7 @@ import com.pindou.app.ui.AppViewModel
 import com.pindou.app.ui.PindouApp
 import com.pindou.app.ui.RefreshRatePump
 import com.pindou.app.ui.theme.PindouTheme
+import com.pindou.app.ui.theme.AppThemes
 
 class MainActivity : ComponentActivity() {
 
@@ -35,7 +36,8 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(vm.settings.refreshMode) {
                 RefreshRateController.applyWindow(this@MainActivity, vm.settings.refreshMode)
             }
-            PindouTheme(darkTheme = dark) {
+            val skin = AppThemes.byId(vm.settings.themeSkin)
+            PindouTheme(appTheme = skin, darkTheme = dark) {
                 Box(Modifier.fillMaxSize()) {
                     PindouApp(vm)
                     // 换档要重建 Surface：已经出过帧的 producer 改 setFrameRate 不生效

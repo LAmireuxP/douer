@@ -94,7 +94,6 @@ private val Tabs = listOf(
 @Composable
 fun PindouApp(vm: AppViewModel) {
     val snackbarHostState = remember { SnackbarHostState() }
-    var glassSettingsOpen by remember { mutableStateOf(false) }
     val pendingUndo = vm.deleteUndo
 
     // 删除撤销：Snackbar 带 action，用户点「撤销」就回插；10 秒到时或
@@ -277,19 +276,10 @@ fun PindouApp(vm: AppViewModel) {
                     glass = vm.settings.glass,
                     current = vm.homeTab,
                     onSelect = vm::selectHomeTab,
-                    onOpenGlassSettings = { glassSettingsOpen = true },
                     modifier = Modifier.align(Alignment.BottomCenter),
                 )
             }
         }
-    }
-
-    if (glassSettingsOpen) {
-        GlassSettingsSheet(
-            current = vm.settings.glass,
-            onCommit = vm::setGlassAppearance,
-            onDismiss = { glassSettingsOpen = false },
-        )
     }
 }
 
@@ -336,7 +326,6 @@ private fun GlassBottomBar(
     glass: GlassAppearance,
     current: HomeTab,
     onSelect: (HomeTab) -> Unit,
-    onOpenGlassSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val shape = RoundedCornerShape(glass.cornerDp.dp)
@@ -420,8 +409,7 @@ private fun GlassBottomBar(
                 .fillMaxSize()
                 .padding(horizontal = 6.dp, vertical = 6.dp),
         ) {
-            // 右侧留 44dp 给玻璃设置入口，三个 tab 平分剩余宽度
-            val slot = (maxWidth - 44.dp) / Tabs.size
+            val slot = maxWidth / Tabs.size
             // 一块玻璃片在三个槽位间移动，比每个 tab 各闪一下更像液体
             val pillX by animateDpAsState(
                 targetValue = slot * selectedIndex,
@@ -530,29 +518,6 @@ private fun GlassBottomBar(
                     }
                 }
 
-                // 玻璃参数入口：贴在底栏最右侧，和三个页面 tab 分开，
-                // 图标换成「滑块」而不是齿轮，避免和设置页混淆。
-                Box(
-                    modifier = Modifier
-                        .width(44.dp)
-                        .fillMaxHeight(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    IconButton(
-                        onClick = onOpenGlassSettings,
-                        modifier = Modifier
-                            .size(34.dp)
-                            .clip(CircleShape)
-                            .background(Color.White.copy(alpha = if (dark) 0.08f else 0.30f)),
-                    ) {
-                        Icon(
-                            MorphIcons.Sliders,
-                            contentDescription = "调整底栏玻璃",
-                            tint = idleInk,
-                            modifier = Modifier.size(17.dp),
-                        )
-                    }
-                }
             }
         }
     }

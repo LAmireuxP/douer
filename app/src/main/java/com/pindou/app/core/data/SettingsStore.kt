@@ -22,6 +22,8 @@ class SettingsStore(private val context: Context) {
         val GRID_H = intPreferencesKey("default_grid_h")
         val PALETTE_BRAND = stringPreferencesKey("default_palette_brand")
         val THEME_MODE = stringPreferencesKey("theme_mode")       // system | light | dark
+        /** 界面主题包 id，见 AppThemes；未知值回落到 douer。 */
+        val THEME_SKIN = stringPreferencesKey("theme_skin")
         val REFRESH_MODE = stringPreferencesKey("refresh_mode")   // system | 60 | 90 | 120
         val AI_SUBJECT = booleanPreferencesKey("ai_subject_segmentation")
         // 浮窗位置用 0..1 的比例保存，换屏幕/横竖屏后仍落在可见范围内。
@@ -94,6 +96,7 @@ class SettingsStore(private val context: Context) {
         val defaultGridH: Int = 48,
         val defaultPaletteBrand: String = "MARD",
         val themeMode: String = "system",
+        val themeSkin: String = "douer",
         val refreshMode: String = "system",
         val aiSubjectEnabled: Boolean = false,
         val studioToolX: Float = -1f,
@@ -116,6 +119,7 @@ class SettingsStore(private val context: Context) {
         defaultGridH = this[GRID_H] ?: 48,
         defaultPaletteBrand = this[PALETTE_BRAND] ?: "MARD",
         themeMode = this[THEME_MODE] ?: "system",
+        themeSkin = this[THEME_SKIN] ?: "douer",
         refreshMode = this[REFRESH_MODE] ?: "system",
         aiSubjectEnabled = this[AI_SUBJECT] ?: false,
         studioToolX = this[STUDIO_TOOL_X] ?: -1f,
@@ -153,6 +157,8 @@ class SettingsStore(private val context: Context) {
     suspend fun setDefaultPalette(brand: String) = context.dataStore.edit { it[PALETTE_BRAND] = brand }
 
     suspend fun setThemeMode(mode: String) = context.dataStore.edit { it[THEME_MODE] = mode }
+
+    suspend fun setThemeSkin(id: String) = context.dataStore.edit { it[THEME_SKIN] = id }
 
     suspend fun setRefreshMode(mode: String) = context.dataStore.edit { it[REFRESH_MODE] = mode }
 

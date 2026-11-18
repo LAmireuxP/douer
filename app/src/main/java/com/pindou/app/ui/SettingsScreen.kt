@@ -135,23 +135,17 @@ fun SettingsScreen(vm: AppViewModel) {
             }
         }
 
-        // 外观
-        ShCard(modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(Spacing.md), verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-                Text("主题", style = MaterialTheme.typography.titleLarge)
-                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
-                    listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色").forEach { (mode, label) ->
-                        ShChip(
-                            text = label,
-                            selected = settings.themeMode == mode,
-                            onClick = {
-                                vm.viewModelScope.launch { vm.settingsStore.setThemeMode(mode) }
-                            },
-                        )
-                    }
-                }
-            }
-        }
+        // 外观：明暗模式 + 主题包 + 底栏玻璃参数，全在这一张卡里
+        AppearanceCard(
+            themeMode = settings.themeMode,
+            themeSkin = settings.themeSkin,
+            glass = settings.glass,
+            onThemeMode = { mode ->
+                vm.viewModelScope.launch { vm.settingsStore.setThemeMode(mode) }
+            },
+            onThemeSkin = vm::setThemeSkin,
+            onGlass = vm::setGlassAppearance,
+        )
 
         // 刷新率
         ShCard(modifier = Modifier.fillMaxWidth()) {

@@ -466,6 +466,8 @@ private fun CropOverlay(
     val currentRect by rememberUpdatedState(rect)
     val currentRatio by rememberUpdatedState(ratio)
     val currentGuides by rememberUpdatedState(guides)
+    // Canvas 的 draw lambda 不是 @Composable：主色在这里读一次再传进去
+    val themeAccent = ClayColors.Primary
     val cornerHitR = with(LocalDensity.current) { CropCornerHitRadius.toPx() }
     val edgeHitR = with(LocalDensity.current) { CropEdgeHitRadius.toPx() }
     var drag by remember { mutableStateOf<CropDrag?>(null) }
@@ -559,6 +561,7 @@ private fun CropOverlay(
             gridH = gridH,
             showGrid = showGrid,
             showGuides = showGuides,
+            accent = themeAccent,
         )
     }
 }
@@ -636,6 +639,7 @@ private fun DrawScope.drawCropUi(
     gridH: Int,
     showGrid: Boolean = true,
     showGuides: Boolean = true,
+    accent: Color = Color(0xFF5FBAFF),
 ) {
     val cl = originX + rect.left * scale
     val ct = originY + rect.top * scale
@@ -688,7 +692,7 @@ private fun DrawScope.drawCropUi(
     }
 
     drawRect(Color.White.copy(alpha = 0.9f), Offset(cl, ct), Size(w, h), style = Stroke(5.dp.toPx()))
-    drawRect(ClayColors.Primary, Offset(cl, ct), Size(w, h), style = Stroke(2.dp.toPx()))
+    drawRect(accent, Offset(cl, ct), Size(w, h), style = Stroke(2.dp.toPx()))
 
     val arm = 26.dp.toPx()
     val bracket = listOf(
@@ -702,7 +706,7 @@ private fun DrawScope.drawCropUi(
         Offset(cr, cb) to Offset(cr, cb - arm),
     )
     bracket.forEach { (a, b) -> drawLine(Color.White, a, b, 11.dp.toPx(), cap = StrokeCap.Round) }
-    bracket.forEach { (a, b) -> drawLine(ClayColors.Primary, a, b, 6.dp.toPx(), cap = StrokeCap.Round) }
+    bracket.forEach { (a, b) -> drawLine(accent, a, b, 6.dp.toPx(), cap = StrokeCap.Round) }
 
     val barLen = 34.dp.toPx()
     val bars = listOf(
@@ -712,7 +716,7 @@ private fun DrawScope.drawCropUi(
         Offset((cl + cr) / 2f - barLen / 2f, cb) to Offset((cl + cr) / 2f + barLen / 2f, cb),
     )
     bars.forEach { (a, b) -> drawLine(Color.White, a, b, 13.dp.toPx(), cap = StrokeCap.Round) }
-    bars.forEach { (a, b) -> drawLine(ClayColors.Primary, a, b, 7.dp.toPx(), cap = StrokeCap.Round) }
+    bars.forEach { (a, b) -> drawLine(accent, a, b, 7.dp.toPx(), cap = StrokeCap.Round) }
 }
 
 private fun rectsMatch(a: CropRect, b: CropRect): Boolean =
