@@ -1,33 +1,28 @@
 @file:OptIn(ExperimentalLayoutApi::class)
+
 package com.pindou.app.ui.studio
 
-import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -47,6 +42,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.pindou.app.core.studio.StudioBlendMode
 import com.pindou.app.core.studio.StudioImageImport
 import com.pindou.app.ui.icon.MorphIcons
@@ -56,7 +52,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * 图层 sheet。
+ *
+ * 和旧版的差别是信息分层：顶部先给「导入底层 / 新建 / 复制」三个最常用动作，
+ * 中间是图层栈（每行右侧的上下箭头换成了独立的「上移/下移」），
+ * 底部才是破坏性动作（删除/合并/压平/清空）和当前层属性。
+ * 这样打开面板第一眼就是图层列表，不用先越过两排 chip。
+ */
 @Composable
 fun StudioLayersPanel(
     session: StudioSession,
@@ -93,7 +96,6 @@ fun StudioLayersPanel(
             }.onSuccess { imported ->
                 session.act { it.importReferenceImage(imported) }
                 importStatus = "已导入底层原图；软件不会自动转像素，请在上层手动画"
-                Toast.makeText(context, "原图已铺到底层，可直接在上层点像素", Toast.LENGTH_SHORT).show()
                 // 只有教程状态才收起面板并继续；手动打开图层时保持原流程
                 if (tourActive) onTourDone()
             }.onFailure {
@@ -103,250 +105,253 @@ fun StudioLayersPanel(
         }
     }
 
-    ModalBottomSheet(onDismissRequest = onClose) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 620.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(bottom = Spacing.lg),
-        ) {
-            PanelHeader(
-                "图层",
-                "第 ${engine.frameIndex + 1} 帧 · ${engine.layerCount} 层 · 当前「${engine.activeLayer.name}」",
-                onClose,
-            )
-            if (tourActive) {
-                Column(
+    StudioSheet(
+        title = "图层",
+        subtitle = "第 ${engine.frameIndex + 1} 帧 · ${engine.layerCount} 层 · 当前「${engine.activeLayer.name}」",
+        onClose = onClose,
+    ) {
+        if (tourActive) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+            ) {
+                Row(verticalAlignment = Alignment.Top) {
+                    Icon(
+                        MorphIcons.ImagePlus,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .padding(top = 1.dp)
+                            .size(20.dp),
+                    )
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = 8.dp),
+                    ) {
+                        Text(
+                            "下一步：导入底层图片",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "点下面被高亮的「导入底层图片」选一张照片。" +
+                                "照片只铺在绘制层下面做参考，不会自动转成像素，也不参与 PNG/PDF/GIF 导出。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                }
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = Spacing.md, vertical = 4.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
-                        .border(
-                            1.dp,
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.38f),
-                            RoundedCornerShape(14.dp),
-                        )
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .padding(top = 2.dp),
+                    horizontalArrangement = Arrangement.End,
                 ) {
-                    Row(verticalAlignment = Alignment.Top) {
-                        Icon(
-                            MorphIcons.ImagePlus,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier
-                                .padding(top = 1.dp)
-                                .size(20.dp),
-                        )
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(start = 8.dp),
-                        ) {
-                            Text(
-                                "下一步：导入底层图片",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                "点下面被高亮的「导入底层图片」选一张照片。" +
-                                    "照片只铺在绘制层下面做参考，不会自动转成像素，也不参与 PNG/PDF/GIF 导出。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 2.dp),
-                            )
-                        }
-                    }
                     TextButton(
                         onClick = onTourDone,
-                        modifier = Modifier.align(Alignment.End),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                            horizontal = 8.dp,
+                            vertical = 0.dp,
+                        ),
                     ) {
                         Text("知道了", style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
-            FlowRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Spacing.md),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                ActionChip(
-                    text = if (importing) "正在导入…" else "导入底层图片",
-                    enabled = !importing,
-                    attention = tourActive,
-                ) { imageLauncher.launch(arrayOf("image/*")) }
-                ActionChip("清除底层图", enabled = reference != null) {
-                    session.act { it.clearReference() }
-                }
-                ActionChip("+ 新图层") { session.act { it.addLayer(false) } }
-                ActionChip("复制") { session.act { it.addLayer(true) } }
-                ActionChip("删除", enabled = engine.layerCount > 1) {
-                    session.act { it.deleteLayer(it.activeLayerIndex) }
-                }
-                ActionChip("向下合并", enabled = engine.activeLayerIndex > 0) {
-                    session.act { it.mergeDown(it.activeLayerIndex) }
-                }
-                ActionChip("压平", enabled = engine.layerCount > 1) {
-                    session.act { it.flattenFrame() }
-                }
-                ActionChip("清空") { session.act { it.clearLayer() } }
-            }
-            importStatus?.let { status ->
+        }
+
+        SheetSection(
+            title = "添加",
+            hint = if (reference != null) "底层已铺一张参考图 · 不参与导出" else "底层图只做参考，不会自动转成像素",
+        ) {
+            SheetPrimaryButton(
+                text = if (importing) "正在导入…" else "导入底层图片",
+                icon = MorphIcons.ImagePlus,
+                enabled = !importing,
+                onClick = { imageLauncher.launch(arrayOf("image/*")) },
+            )
+            if (importStatus != null) {
                 Text(
-                    status,
+                    importStatus!!,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = Spacing.md, vertical = 2.dp),
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                SmallSheetAction(
+                    text = "+ 新图层",
+                    modifier = Modifier.weight(1f),
+                ) { session.act { it.addLayer(false) } }
+                SmallSheetAction(
+                    text = "复制图层",
+                    modifier = Modifier.weight(1f),
+                ) { session.act { it.addLayer(true) } }
+                SmallSheetAction(
+                    text = "清除底图",
+                    modifier = Modifier.weight(1f),
+                    enabled = reference != null,
+                ) { session.act { it.clearReference() } }
+            }
+        }
 
-            SectionLabel("图层栈（上 = 更靠前）")
+        SheetSection(title = "图层栈（上 = 更靠前）") {
             for (index in engine.layerCount - 1 downTo 0) {
                 val layer = engine.layers[index]
                 val active = index == engine.activeLayerIndex
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = Spacing.sm, vertical = 1.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(
-                            if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                            else Color.Transparent,
-                        )
-                        .clickable { session.act { it.setActiveLayer(index) } }
-                        .padding(horizontal = 6.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                SheetRow(
+                    title = layer.name,
+                    subtitle = "${layer.blend.label} · ${(layer.opacity * 100).roundToInt()}%",
+                    selected = active,
+                    onClick = { session.act { it.setActiveLayer(index) } },
+                    trailing = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = {
+                                    session.act { it.setLayerVisible(index, !layer.visible) }
+                                },
+                                modifier = Modifier.size(30.dp),
+                            ) {
+                                Icon(
+                                    if (layer.visible) MorphIcons.Eye else MorphIcons.EyeOff,
+                                    contentDescription = if (layer.visible) "隐藏" else "显示",
+                                    modifier = Modifier.size(17.dp),
+                                )
+                            }
+                            IconButton(
+                                onClick = {
+                                    session.act { it.setLayerLocked(index, !layer.locked) }
+                                },
+                                modifier = Modifier.size(30.dp),
+                            ) {
+                                Icon(
+                                    if (layer.locked) MorphIcons.Lock else MorphIcons.LockOpen,
+                                    contentDescription = if (layer.locked) "解锁" else "锁定",
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                            IconButton(
+                                onClick = {
+                                    renameIndex = index
+                                    renameText = layer.name
+                                },
+                                modifier = Modifier.size(30.dp),
+                            ) {
+                                Icon(
+                                    MorphIcons.Type,
+                                    contentDescription = "重命名",
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        }
+                    },
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                SmallSheetAction(
+                    text = "上移",
+                    modifier = Modifier.weight(1f),
+                    enabled = engine.activeLayerIndex < engine.layerCount - 1,
                 ) {
-                    IconButton(
-                        onClick = { session.act { it.setLayerVisible(index, !layer.visible) } },
-                        modifier = Modifier.size(34.dp),
-                    ) {
-                        Icon(
-                            if (layer.visible) MorphIcons.Eye else MorphIcons.EyeOff,
-                            contentDescription = if (layer.visible) "隐藏" else "显示",
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
-                    IconButton(
-                        onClick = { session.act { it.setLayerLocked(index, !layer.locked) } },
-                        modifier = Modifier.size(34.dp),
-                    ) {
-                        Icon(
-                            if (layer.locked) MorphIcons.Lock else MorphIcons.LockOpen,
-                            contentDescription = if (layer.locked) "解锁" else "锁定",
-                            modifier = Modifier.size(17.dp),
-                        )
-                    }
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable {
-                                renameIndex = index
-                                renameText = layer.name
-                            },
-                    ) {
-                        Text(
-                            layer.name,
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            "${layer.blend.label} · ${(layer.opacity * 100).roundToInt()}%",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    IconButton(
-                        onClick = { session.act { it.moveLayer(index, index + 1) } },
-                        enabled = index < engine.layerCount - 1,
-                        modifier = Modifier.size(30.dp),
-                    ) {
-                        Icon(MorphIcons.ArrowUp, contentDescription = "上移", modifier = Modifier.size(17.dp))
-                    }
-                    IconButton(
-                        onClick = { session.act { it.moveLayer(index, index - 1) } },
-                        enabled = index > 0,
-                        modifier = Modifier.size(30.dp),
-                    ) {
-                        Icon(MorphIcons.ArrowDown, contentDescription = "下移", modifier = Modifier.size(17.dp))
-                    }
+                    val i = engine.activeLayerIndex
+                    session.act { it.moveLayer(i, i + 1) }
+                }
+                SmallSheetAction(
+                    text = "下移",
+                    modifier = Modifier.weight(1f),
+                    enabled = engine.activeLayerIndex > 0,
+                ) {
+                    val i = engine.activeLayerIndex
+                    session.act { it.moveLayer(i, i - 1) }
+                }
+                SmallSheetAction(
+                    text = "向下合并",
+                    modifier = Modifier.weight(1f),
+                    enabled = engine.activeLayerIndex > 0,
+                ) {
+                    val i = engine.activeLayerIndex
+                    session.act { it.mergeDown(i) }
                 }
             }
+        }
 
-            if (reference != null) {
-                SectionLabel("底层原图（不参与导出）")
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = Spacing.sm, vertical = 1.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
-                        .padding(horizontal = 6.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(
-                        onClick = { session.act { it.setReferenceVisible(!reference.visible) } },
-                        modifier = Modifier.size(34.dp),
-                    ) {
+        if (reference != null) {
+            SheetSection(title = "底层原图（不参与导出）") {
+                SheetRow(
+                    title = "底层原图",
+                    subtitle = "${reference.width}×${reference.height} · 原画参考",
+                    icon = MorphIcons.ImagePlus,
+                    onClick = { session.act { it.setReferenceVisible(!reference.visible) } },
+                    trailing = {
                         Icon(
                             if (reference.visible) MorphIcons.Eye else MorphIcons.EyeOff,
                             contentDescription = if (reference.visible) "隐藏原图" else "显示原图",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(18.dp),
                         )
-                    }
-                    Column(Modifier.weight(1f)) {
-                        Text("底层原图", style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            "${reference.width}×${reference.height} · 原画参考，不参与导出",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
+                    },
+                )
             }
+        }
 
-            SectionLabel("当前图层不透明度")
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Spacing.md),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Slider(
-                    value = engine.activeLayer.opacity,
-                    onValueChange = { v -> session.act { it.setLayerOpacity(it.activeLayerIndex, v) } },
-                    valueRange = 0f..1f,
+        SheetSection(title = "当前图层") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "不透明度",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
                 Text(
                     "${(engine.activeLayer.opacity * 100).roundToInt()}%",
                     style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier.width(44.dp),
+                    fontWeight = FontWeight.SemiBold,
                 )
             }
-
-            SectionLabel("混合模式")
+            Slider(
+                value = engine.activeLayer.opacity,
+                onValueChange = { v ->
+                    session.act { it.setLayerOpacity(it.activeLayerIndex, v) }
+                },
+                valueRange = 0f..1f,
+                modifier = Modifier.height(32.dp),
+            )
             FlowRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Spacing.md),
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                verticalArrangement = Arrangement.spacedBy(5.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 StudioBlendMode.entries.forEach { mode ->
-                    ActionChip(
+                    MiniChip(
                         text = mode.label,
                         selected = engine.activeLayer.blend == mode,
                     ) {
                         session.act { it.setLayerBlend(it.activeLayerIndex, mode) }
                     }
                 }
+            }
+        }
+
+        SheetSection(title = "整理", hint = "删除和压平都会影响整帧，操作可撤销") {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                SmallSheetAction(
+                    text = "压平",
+                    modifier = Modifier.weight(1f),
+                    enabled = engine.layerCount > 1,
+                ) { session.act { it.flattenFrame() } }
+                SmallSheetAction(
+                    text = "清空图层",
+                    modifier = Modifier.weight(1f),
+                ) { session.act { it.clearLayer() } }
+                SmallSheetAction(
+                    text = "删除图层",
+                    modifier = Modifier.weight(1f),
+                    enabled = engine.layerCount > 1,
+                    danger = true,
+                ) { session.act { it.deleteLayer(it.activeLayerIndex) } }
             }
         }
     }
@@ -371,6 +376,71 @@ fun StudioLayersPanel(
                 ) { Text("确定") }
             },
             dismissButton = { TextButton(onClick = { renameIndex = -1 }) { Text("取消") } },
+        )
+    }
+}
+
+/** 三列以内的次要动作：白底、1dp 边、40dp 高。 */
+@Composable
+private fun SmallSheetAction(
+    text: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    danger: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val tint = when {
+        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+        danger -> MaterialTheme.colorScheme.error
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+    Box(
+        modifier = modifier
+            .height(40.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(
+                if (danger && enabled) MaterialTheme.colorScheme.error.copy(alpha = 0.07f)
+                else MaterialTheme.colorScheme.surface,
+            )
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelMedium,
+            color = tint,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/** 属性小胶囊：混合模式、帧率这类互斥短选项。 */
+@Composable
+internal fun MiniChip(
+    text: String,
+    selected: Boolean,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.surface,
+            )
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+            color = when {
+                !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                selected -> MaterialTheme.colorScheme.onPrimary
+                else -> MaterialTheme.colorScheme.onSurface
+            },
         )
     }
 }

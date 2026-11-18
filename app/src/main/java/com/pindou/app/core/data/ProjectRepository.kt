@@ -200,6 +200,36 @@ class ProjectRepository(private val context: Context) {
     }
 
     /**
+     * 可撤销删除：只删数据库行，sidecar 文件留在磁盘上。
+     *
+     * 撤销窗口内缩略图/画像素工程必须还能读到，所以文件清理交给
+     * [purgeDeletedFiles]；窗口结束（Snackbar 超时或被新删除顶掉）再删。
+     */
+    suspend fun softDelete(ids: Collection<Long>): List<ProjectEntity> = withContext(Dispatchers.IO) {
+        db.withTransaction {
+            ids.mapNotNull { id ->
+                dao.getById(id)?.also { dao.delete(id) }
+            }
+        }
+    }
+
+    /** 撤销删除：带着原 id 回插，侧栏文件从未删过，缩略图立即可用。 */
+    suspend fun restoreDeleted(projects: List<ProjectEntity>) = withContext(Dispatchers.IO) {
+        if (projects.isEmpty()) return@withContext
+        db.withTransaction {
+            projects.forEach { dao.insert(it) }
+        }
+    }
+
+    /** 撤销窗口结束：清理三条 sidecar 路径，失败不影响其他文件。 */
+    suspend fun purgeDeletedFiles(projects: List<ProjectEntity>) = withContext(Dispatchers.IO) {
+        projects.forEach { project ->
+            listOfNotNull(project.thumbnailPath, project.studioPath, project.refPath)
+                .forEach { path -> runCatching { File(path).delete() } }
+        }
+    }
+
+    /**
      * 导入外部图纸（.bpat）或复刻项目：全量新建一个实体。
      * 复刻时缩略图复制一份独立文件，避免删除原项目时把复刻的图也删掉。
      */

@@ -244,6 +244,22 @@ object MorphIcons {
         )
     }
 
+    /** 三根带滑块的横线：用于「外观参数」，和设置齿轮区分开。 */
+    val Sliders: ImageVector by lazy {
+        strokeIcon(
+            name = "Sliders",
+            "M4 6h10",
+            "M18 6h2",
+            "M4 12h4",
+            "M12 12h8",
+            "M4 18h12",
+            "M20 18h0",
+            "M16 4v4",
+            "M10 10v4",
+            "M16 16v4",
+        )
+    }
+
     val Grid: ImageVector by lazy {
         strokeIcon(
             name = "Grid",

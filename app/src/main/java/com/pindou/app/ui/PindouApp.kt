@@ -1,6 +1,7 @@
 package com.pindou.app.ui
 
 import com.pindou.app.ui.icon.MorphIcons
+import com.pindou.app.core.settings.GlassAppearance
 import com.pindou.app.ui.theme.ClayColors
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -11,6 +12,8 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -31,10 +34,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -88,6 +94,28 @@ private val Tabs = listOf(
 @Composable
 fun PindouApp(vm: AppViewModel) {
     val snackbarHostState = remember { SnackbarHostState() }
+    var glassSettingsOpen by remember { mutableStateOf(false) }
+    val pendingUndo = vm.deleteUndo
+
+    // 删除撤销：Snackbar 带 action，用户点「撤销」就回插；10 秒到时或
+    // 被下一条 Snackbar 顶掉，就确认删除并清 sidecar。
+    // key 用实例而不是文案：连续删两个同名图纸时文案相同，
+    // 用文案做 key 会让第二次的 Snackbar 根本不出。
+    LaunchedEffect(pendingUndo) {
+        if (pendingUndo != null) {
+            val result = snackbarHostState.showSnackbar(
+                message = pendingUndo.message,
+                actionLabel = "撤销",
+                duration = SnackbarDuration.Long,
+                withDismissAction = false,
+            )
+            if (result == SnackbarResult.ActionPerformed) {
+                vm.undoDelete()
+            } else if (vm.deleteUndo === pendingUndo) {
+                vm.commitDelete()
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -180,18 +208,31 @@ fun PindouApp(vm: AppViewModel) {
                 snackbarHostState,
                 modifier = Modifier.padding(bottom = if (vm.screen == Screen.HOME) 96.dp else 0.dp),
             ) { data ->
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = ClayColors.Ink,
-                    contentColor = ClayColors.OnDark,
-                    shadowElevation = 8.dp,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
-                ) {
-                    Text(
-                        data.visuals.message,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                // 有 action 时走 Material 的 Snackbar 本体，才会出现右侧按钮
+                if (data.visuals.actionLabel != null) {
+                    Snackbar(
+                        snackbarData = data,
+                        shape = RoundedCornerShape(12.dp),
+                        containerColor = ClayColors.Ink,
+                        contentColor = ClayColors.OnDark,
+                        actionColor = ClayColors.Primary,
+                        actionOnNewLine = false,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
                     )
+                } else {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = ClayColors.Ink,
+                        contentColor = ClayColors.OnDark,
+                        shadowElevation = 8.dp,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
+                    ) {
+                        Text(
+                            data.visuals.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        )
+                    }
                 }
             }
         },
@@ -230,12 +271,22 @@ fun PindouApp(vm: AppViewModel) {
             if (vm.screen == Screen.HOME && !selectionBarActive) {
                 GlassBottomBar(
                     backdrop = backdrop,
+                    glass = vm.settings.glass,
                     current = vm.homeTab,
                     onSelect = vm::selectHomeTab,
+                    onOpenGlassSettings = { glassSettingsOpen = true },
                     modifier = Modifier.align(Alignment.BottomCenter),
                 )
             }
         }
+    }
+
+    if (glassSettingsOpen) {
+        GlassSettingsSheet(
+            current = vm.settings.glass,
+            onCommit = vm::setGlassAppearance,
+            onDismiss = { glassSettingsOpen = false },
+        )
     }
 }
 
@@ -279,17 +330,20 @@ private fun HomeScreen(
 @Composable
 private fun GlassBottomBar(
     backdrop: Backdrop,
+    glass: GlassAppearance,
     current: HomeTab,
     onSelect: (HomeTab) -> Unit,
+    onOpenGlassSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val shape = RoundedCornerShape(32.dp)
+    val shape = RoundedCornerShape(glass.cornerDp.dp)
     val dark = MaterialTheme.colorScheme.surface.luminance() < 0.35f
     val accent = MaterialTheme.colorScheme.primary
     val selectedInk = if (dark) Color.White else ClayColors.PrimaryInk
     val idleInk = if (dark) Color.White.copy(alpha = 0.60f) else ClayColors.Body.copy(alpha = 0.56f)
     val glassTint = if (dark) Color(0xFF0A1117) else Color.White
     val selectedIndex = Tabs.indexOfFirst { it.target == current }.coerceAtLeast(0)
+    val alphas = glass.surfaceAlphas(dark)
 
     Box(
         modifier = modifier
@@ -303,14 +357,12 @@ private fun GlassBottomBar(
                 shape = { shape },
                 effects = {
                     vibrancy()
-                    // 12dp 是 64dp 高胶囊的甜点：再高会把图标边缘糊掉，
-                    // 再低则列表文字会从玻璃里透出来抢注意力。
-                    blur(12.dp.toPx())
+                    blur(glass.blurDp.dp.toPx())
                     lens(
-                        refractionHeight = 14.dp.toPx(),
-                        refractionAmount = 26.dp.toPx(),
+                        refractionHeight = (glass.refractionDp * 0.54f).dp.toPx(),
+                        refractionAmount = glass.refractionDp.dp.toPx(),
                         depthEffect = true,
-                        chromaticAberration = true,
+                        chromaticAberration = glass.chromatic,
                     )
                 },
                 highlight = {
@@ -319,7 +371,11 @@ private fun GlassBottomBar(
                         blurRadius = 0.5.dp,
                         alpha = if (dark) 0.95f else 0.90f,
                         style = HighlightStyle.Default(
-                            intensity = if (dark) 0.55f else 0.72f,
+                            intensity = if (dark) {
+                                (glass.highlight * 0.78f).coerceIn(0f, 1f)
+                            } else {
+                                glass.highlight
+                            },
                             angle = 45f,
                             falloff = 1.1f,
                         ),
@@ -346,11 +402,11 @@ private fun GlassBottomBar(
                     }
                     drawRect(
                         Brush.verticalGradient(
-                            0f to Color.White.copy(alpha = if (dark) 0.10f else 0.38f),
-                            0.45f to Color.White.copy(alpha = if (dark) 0.02f else 0.14f),
+                            0f to Color.White.copy(alpha = alphas.top),
+                            0.45f to Color.White.copy(alpha = alphas.middle),
                             0.75f to Color.Transparent,
-                            1f to if (dark) Color.White.copy(alpha = 0.05f)
-                            else accent.copy(alpha = 0.05f),
+                            1f to if (dark) Color.White.copy(alpha = alphas.bottom)
+                            else accent.copy(alpha = alphas.bottom),
                         ),
                     )
                 },
@@ -361,7 +417,8 @@ private fun GlassBottomBar(
                 .fillMaxSize()
                 .padding(horizontal = 6.dp, vertical = 6.dp),
         ) {
-            val slot = maxWidth / Tabs.size
+            // 右侧留 44dp 给玻璃设置入口，三个 tab 平分剩余宽度
+            val slot = (maxWidth - 44.dp) / Tabs.size
             // 一块玻璃片在三个槽位间移动，比每个 tab 各闪一下更像液体
             val pillX by animateDpAsState(
                 targetValue = slot * selectedIndex,
@@ -439,7 +496,7 @@ private fun GlassBottomBar(
 
                     Column(
                         modifier = Modifier
-                            .weight(1f)
+                            .width(slot)
                             .fillMaxHeight()
                             .graphicsLayer {
                                 scaleX = pressScale
@@ -466,6 +523,30 @@ private fun GlassBottomBar(
                             fontSize = 10.sp,
                             lineHeight = 12.sp,
                             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                        )
+                    }
+                }
+
+                // 玻璃参数入口：贴在底栏最右侧，和三个页面 tab 分开，
+                // 图标换成「滑块」而不是齿轮，避免和设置页混淆。
+                Box(
+                    modifier = Modifier
+                        .width(44.dp)
+                        .fillMaxHeight(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    IconButton(
+                        onClick = onOpenGlassSettings,
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = if (dark) 0.08f else 0.30f)),
+                    ) {
+                        Icon(
+                            MorphIcons.Sliders,
+                            contentDescription = "调整底栏玻璃",
+                            tint = idleInk,
+                            modifier = Modifier.size(17.dp),
                         )
                     }
                 }

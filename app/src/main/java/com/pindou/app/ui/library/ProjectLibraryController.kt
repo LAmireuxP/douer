@@ -4,6 +4,7 @@ import com.pindou.app.core.data.GridCodec
 import com.pindou.app.core.data.ProjectGridRepair
 import com.pindou.app.core.data.ProjectRepository
 import com.pindou.app.core.data.ProjectSummary
+import com.pindou.app.core.data.ProjectEntity
 import com.pindou.app.core.palette.BeadPalette
 import com.pindou.app.ui.chunkBooleans
 import com.pindou.app.ui.chunkInts
@@ -25,6 +26,12 @@ class ProjectLibraryController(
         fun onCurrentProjectDeleted(id: Long)
         fun showLibraryToast(message: String)
         fun showLibraryError(message: String)
+        /** 删除成功后弹可撤销 Snackbar；撤诉窗口结束由宿主回调 [UndoDelete] 清文件。 */
+        fun showDeleteUndo(
+            names: List<String>,
+            onUndo: suspend () -> Unit,
+            onExpired: suspend () -> Unit,
+        )
 
         /** 复刻时色卡按需加载；返回全部色卡。 */
         suspend fun ensurePalettes(): List<BeadPalette>
@@ -32,27 +39,43 @@ class ProjectLibraryController(
         fun paletteFor(brand: String, beadSize: String): BeadPalette?
     }
 
-    fun delete(summary: ProjectSummary) {
-        scope.launch {
-            repository.delete(summary.id)
-            if (host.currentProjectId == summary.id) host.onCurrentProjectDeleted(summary.id)
-        }
-    }
+    /**
+     * 单删 / 批删共用一条软删链路：
+     * 软删行 → 弹可撤销 Snackbar → 用户点撤销则原样回插，否则清理 sidecar。
+     *
+     * 失败时把异常交给宿主显示；不再像旧版直接调 repository.delete，
+     * 避免误触后项目连缩略图一起消失。
+     */
+    fun delete(summary: ProjectSummary) = deleteSoft(listOf(summary.id), listOf(summary.name))
 
-    /** 批量删除：Repository 负责逐条清理缩略图 / 图层 sidecar */
-    fun deleteAll(ids: Collection<Long>) {
+    fun deleteSoft(ids: Collection<Long>, names: List<String>? = null) {
         if (ids.isEmpty()) return
         val snapshot = ids.toList()
         scope.launch {
             try {
-                repository.deleteAll(snapshot)
-                if (host.currentProjectId in snapshot) host.onCurrentProjectDeleted(snapshot.first())
-                host.showLibraryToast("已删除 ${snapshot.size} 份图纸")
+                val removed: List<ProjectEntity> = repository.softDelete(snapshot)
+                if (removed.isEmpty()) {
+                    host.showLibraryError("删除失败：项目已不存在")
+                    return@launch
+                }
+                val removedIds = removed.map { it.id }
+                if (host.currentProjectId in removedIds) {
+                    host.onCurrentProjectDeleted(removedIds.first())
+                }
+                val labels = names ?: removed.map { it.name }
+                host.showDeleteUndo(
+                    names = labels,
+                    onUndo = { repository.restoreDeleted(removed) },
+                    onExpired = { repository.purgeDeletedFiles(removed) },
+                )
             } catch (e: Exception) {
-                host.showLibraryError("批量删除失败：${e.message ?: e.javaClass.simpleName}")
+                host.showLibraryError("删除失败：${e.message ?: e.javaClass.simpleName}")
             }
         }
     }
+
+    /** 批量删除：和单删共用软删 + 撤销链路，撤销窗口结束才清 sidecar。 */
+    fun deleteAll(ids: Collection<Long>) = deleteSoft(ids)
 
     fun setFav(ids: Collection<Long>, fav: Boolean) {
         if (ids.isEmpty()) return

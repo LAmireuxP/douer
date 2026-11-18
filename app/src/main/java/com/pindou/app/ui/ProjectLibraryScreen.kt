@@ -76,6 +76,7 @@ import com.pindou.app.ui.shadcn.ShCard
 import com.pindou.app.ui.shadcn.ShChip
 import com.pindou.app.ui.shadcn.ShSearchField
 import com.pindou.app.ui.shadcn.TextButton
+import com.pindou.app.ui.shadcn.ShVariant
 import com.pindou.app.ui.theme.ClayColors
 import com.pindou.app.ui.theme.Spacing
 import kotlinx.coroutines.Dispatchers
@@ -442,36 +443,28 @@ fun ProjectLibraryScreen(
     }
 
     deleteTarget?.let { target ->
-        AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            title = { Text("删除项目") },
-            text = { Text("确定删除「${target.name}」？此操作不可恢复。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    vm.deleteProject(target)
-                    deleteTarget = null
-                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+        DeleteProjectDialog(
+            title = "删除这份图纸？",
+            message = "「${target.name}」会从项目库移除，缩略图和画像素图层工程一并清理。",
+            onDismiss = { deleteTarget = null },
+            onConfirm = {
+                vm.deleteProject(target)
+                deleteTarget = null
             },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } },
         )
     }
 
     if (batchDeleteOpen && selectedProjects.isNotEmpty()) {
         val count = selectedProjects.size
-        AlertDialog(
-            onDismissRequest = { batchDeleteOpen = false },
-            title = { Text("删除 $count 份图纸") },
-            text = { Text("选中的图纸、缩略图和图层工程会一起删除，此操作不可恢复。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    val ids = selectedProjects.map { it.id }
-                    batchDeleteOpen = false
-                    vm.deleteProjects(ids)
-                    exitSelection()
-                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { batchDeleteOpen = false }) { Text("取消") }
+        DeleteProjectDialog(
+            title = "删除 $count 份图纸？",
+            message = "选中的图纸、缩略图和图层工程会一起移除。删除后 10 秒内还能从底部提示里撤销。",
+            onDismiss = { batchDeleteOpen = false },
+            onConfirm = {
+                val ids = selectedProjects.map { it.id }
+                batchDeleteOpen = false
+                vm.deleteProjects(ids)
+                exitSelection()
             },
         )
     }
@@ -508,6 +501,87 @@ fun ProjectLibraryScreen(
             },
         )
     }
+}
+
+/**
+ * 删除确认框。
+ *
+ * 用图标 + 标题 + 说明 + 「取消 / 删除」两键：删除键是 error 实心样式，
+ * 和普通确认框区分开；正文明确写出「10 秒内可撤销」，
+ * 用户不会以为点了就没了。
+ */
+@Composable
+private fun DeleteProjectDialog(
+    title: String,
+    message: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Box(
+                modifier = Modifier
+                    .size(46.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.error.copy(alpha = 0.10f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    MorphIcons.Trash,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+        },
+        title = {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier.padding(top = Spacing.sm),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        MorphIcons.RefreshCcw,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Text(
+                        "删除后可在底部提示条里撤销",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 5.dp),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                variant = ShVariant.Destructive,
+            ) {
+                Text("删除")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+        shape = RoundedCornerShape(22.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+    )
 }
 
 /** 多选 Set 的保存器：旋转屏幕后选择不丢。 */

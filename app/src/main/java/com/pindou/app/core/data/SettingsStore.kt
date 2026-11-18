@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.pindou.app.core.settings.GlassAppearance
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -32,6 +33,13 @@ class SettingsStore(private val context: Context) {
         val STUDIO_TOOL_COLLAPSED = booleanPreferencesKey("studio_tool_collapsed")
         val STUDIO_COLOR_COLLAPSED = booleanPreferencesKey("studio_color_collapsed")
         val STUDIO_TUTORIAL_SEEN = booleanPreferencesKey("studio_tutorial_seen")
+        // 底栏玻璃外观：数值型参数存 Float，色散是开关
+        val GLASS_ALPHA = floatPreferencesKey("glass_alpha")
+        val GLASS_BLUR = floatPreferencesKey("glass_blur_dp")
+        val GLASS_REFRACTION = floatPreferencesKey("glass_refraction_dp")
+        val GLASS_HIGHLIGHT = floatPreferencesKey("glass_highlight")
+        val GLASS_CORNER = floatPreferencesKey("glass_corner_dp")
+        val GLASS_CHROMATIC = booleanPreferencesKey("glass_chromatic")
 
         // 统计只在“新建项目落库”时累加，重新生成/改参数不会重复计数。
         val STAT_TOTAL = intPreferencesKey("stat_total")
@@ -96,6 +104,7 @@ class SettingsStore(private val context: Context) {
         val studioColorCollapsed: Boolean = false,
         /** null = 从未记录，首次进入画像素时展示教程。 */
         val studioTutorialSeen: Boolean? = null,
+        val glass: GlassAppearance = GlassAppearance.Default,
     )
 
     val flow: Flow<Snapshot> = context.dataStore.data.map { p -> p.toSnapshot() }
@@ -116,6 +125,14 @@ class SettingsStore(private val context: Context) {
         studioToolCollapsed = this[STUDIO_TOOL_COLLAPSED] ?: false,
         studioColorCollapsed = this[STUDIO_COLOR_COLLAPSED] ?: false,
         studioTutorialSeen = this[STUDIO_TUTORIAL_SEEN],
+        glass = GlassAppearance(
+            alpha = this[GLASS_ALPHA] ?: GlassAppearance.Default.alpha,
+            blurDp = this[GLASS_BLUR] ?: GlassAppearance.Default.blurDp,
+            refractionDp = this[GLASS_REFRACTION] ?: GlassAppearance.Default.refractionDp,
+            highlight = this[GLASS_HIGHLIGHT] ?: GlassAppearance.Default.highlight,
+            cornerDp = this[GLASS_CORNER] ?: GlassAppearance.Default.cornerDp,
+            chromatic = this[GLASS_CHROMATIC] ?: GlassAppearance.Default.chromatic,
+        ).sanitized(),
     )
 
     private fun Preferences.toStats() = Stats(
@@ -159,6 +176,17 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setStudioTutorialSeen(seen: Boolean) =
         context.dataStore.edit { it[STUDIO_TUTORIAL_SEEN] = seen }
+
+    /** 底栏玻璃：整体覆盖写；先 sanitized 再落盘，读回来的值永远合法。 */
+    suspend fun setGlassAppearance(glass: GlassAppearance) = context.dataStore.edit {
+        val safe = glass.sanitized()
+        it[GLASS_ALPHA] = safe.alpha
+        it[GLASS_BLUR] = safe.blurDp
+        it[GLASS_REFRACTION] = safe.refractionDp
+        it[GLASS_HIGHLIGHT] = safe.highlight
+        it[GLASS_CORNER] = safe.cornerDp
+        it[GLASS_CHROMATIC] = safe.chromatic
+    }
 
     /**
      * 记录一次“新图纸落库”。

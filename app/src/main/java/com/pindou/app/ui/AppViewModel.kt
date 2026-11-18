@@ -47,6 +47,7 @@ import com.pindou.app.core.studio.StudioCodec
 import com.pindou.app.core.studio.StudioEngine
 import com.pindou.app.core.studio.StudioFrame
 import com.pindou.app.core.studio.StudioLayer
+import com.pindou.app.core.settings.GlassAppearance
 import com.pindou.app.ui.pixel.PixelCalibrationController
 import com.pindou.app.ui.library.ProjectLibraryController
 import com.pindou.app.ui.studio.StudioPersistence
@@ -245,6 +246,38 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var pendingCreationKind = SettingsStore.CreationKind.PHOTO
 
     var toast by mutableStateOf<String?>(null)
+
+    /**
+     * 删除后的撤销窗口。
+     *
+     * 回调放在内存里而不是序列化：撤销只跨一次 Snackbar 展示（10 秒），
+     * 进程被杀时本来也不该再恢复一份已经删掉的图纸。
+     */
+    class DeleteUndo(
+        val message: String,
+        val onUndo: suspend () -> Unit,
+        val onExpired: suspend () -> Unit,
+    )
+
+    var deleteUndo by mutableStateOf<DeleteUndo?>(null)
+        private set
+
+    fun undoDelete() {
+        val pending = deleteUndo ?: return
+        deleteUndo = null
+        viewModelScope.launch {
+            runCatching { pending.onUndo() }
+                .onSuccess { toast = "已恢复" }
+                .onFailure { lastError = "恢复失败：${it.message ?: it.javaClass.simpleName}" }
+        }
+    }
+
+    /** Snackbar 超时/被顶掉：确认删除，清理 sidecar 文件。 */
+    fun commitDelete() {
+        val pending = deleteUndo ?: return
+        deleteUndo = null
+        viewModelScope.launch { runCatching { pending.onExpired() } }
+    }
 
     /** 最近一次操作失败原因（常驻显示，便于排查与反馈） */
     var lastError by mutableStateOf<String?>(null)
@@ -1562,6 +1595,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { settingsStore.setStudioTutorialSeen(true) }
     }
 
+    /**
+     * 底栏玻璃参数。
+     *
+     * 先写内存再落盘：拖动滑块时底栏要当帧跟手，等 DataStore 往返会明显滞后。
+     * DataStore 的 flow 稍后回灌同值，UI 不会二次跳变。
+     */
+    fun setGlassAppearance(glass: GlassAppearance) {
+        val safe = glass.sanitized()
+        if (settings.glass == safe) return
+        settings = settings.copy(glass = safe)
+        viewModelScope.launch { settingsStore.setGlassAppearance(safe) }
+    }
+
     fun resetStudioRailPositions() {
         val session = studio ?: return
         session.resetRailPositions()
@@ -2509,6 +2555,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         override fun showLibraryError(message: String) {
             lastError = message
+        }
+
+        override fun showDeleteUndo(
+            names: List<String>,
+            onUndo: suspend () -> Unit,
+            onExpired: suspend () -> Unit,
+        ) {
+            // 新删除直接顶掉旧的：旧的一批先落盘，避免文件泄在磁盘上
+            val previous = deleteUndo
+            if (previous != null) {
+                deleteUndo = null
+                viewModelScope.launch { runCatching { previous.onExpired() } }
+            }
+            val message = when (names.size) {
+                0 -> "已删除"
+                1 -> "已删除「${names.first()}」"
+                else -> "已删除 ${names.size} 份图纸"
+            }
+            deleteUndo = DeleteUndo(message, onUndo, onExpired)
         }
 
         override suspend fun ensurePalettes(): List<BeadPalette> = this@AppViewModel.ensurePalettes()
