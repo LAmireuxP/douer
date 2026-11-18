@@ -48,6 +48,7 @@ import com.pindou.app.core.studio.StudioEngine
 import com.pindou.app.core.studio.StudioFrame
 import com.pindou.app.core.studio.StudioLayer
 import com.pindou.app.ui.pixel.PixelCalibrationController
+import com.pindou.app.ui.studio.StudioPersistence
 import com.pindou.app.ui.studio.StudioSession
 import com.pindou.app.ui.chart.ChartCalibrationController
 import kotlinx.coroutines.CancellationException
@@ -62,7 +63,6 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import java.io.File
-import java.io.FileOutputStream
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -1378,22 +1378,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** 参考原图落盘：长边压到 ≤1024px 的 JPEG，供编辑器对比叠加 */
     private suspend fun saveRefImage(id: Long) {
         val bmp = imagePreview ?: return
-        runCatching {
-            val dir = File(getApplication<Application>().filesDir, "refs").apply { mkdirs() }
-            val file = File(dir, "ref_$id.jpg")
-            val scale = min(1f, 1024f / max(bmp.width, bmp.height))
-            val scaled = if (scale < 1f) {
-                bmp.scale(
-                    (bmp.width * scale).toInt().coerceAtLeast(1),
-                    (bmp.height * scale).toInt().coerceAtLeast(1),
-                    true,
-                )
-            } else bmp
-            FileOutputStream(file).use { scaled.compress(Bitmap.CompressFormat.JPEG, 85, it) }
-            if (scaled !== bmp) scaled.recycle()
-            repository.setRefPath(id, file.absolutePath)
-            refBitmap = bmp
-        }
+        StudioPersistence.saveRefImage(getApplication(), repository, id, bmp)
+            .onSuccess { refBitmap = bmp }
+            .onFailure { lastError = "参考图保存失败：${it.message ?: it.javaClass.simpleName}" }
     }
 
     /**
@@ -1438,43 +1425,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      * 返回项目 id；失败返回 null 并把原因写进 lastError。
      */
     private suspend fun persistStudio(session: StudioSession): Long? = withContext(Dispatchers.IO) {
-        val engine = session.engine
-        val width = engine.width
-        val height = engine.height
-        val pages = engine.frames.indices.map { engine.composite(it) }
-        val pageLocks = pages.map { BooleanArray(width * height) }
-        val palette = session.palette
-        val existing = session.projectId
-        val id = if (existing == null) {
-            repository.importProject(
-                name = session.name.trim().ifBlank { "画像素" },
-                width = width,
-                height = height,
-                palette = palette,
-                pagesCells = pages,
-                pagesLocks = pageLocks,
-            ).also { session.projectId = it }
-        } else {
-            val flat = pages.reduce { acc, cur -> acc + cur }
-            val flatLocks = pageLocks.reduce { acc, cur -> acc + cur }
-            repository.updateCells(
-                id = existing,
-                width = width,
-                height = height,
-                cells = flat,
-                locked = flatLocks,
-                palette = palette,
-                pages = pages.size,
-            )
-            existing
+        StudioPersistence.persistStudio(getApplication(), repository, session) { id ->
+            studioFile(getApplication(), id)
+        }.getOrElse { e ->
+            lastError = "分层工程保存失败：${e.message ?: e.javaClass.simpleName}"
+            null
         }
-        val file = studioFile(getApplication(), id)
-        if (!StudioCodec.save(engine, file)) {
-            lastError = "分层工程保存失败：${file.absolutePath}"
-            return@withContext null
-        }
-        repository.setStudioPath(id, file.absolutePath)
-        id
     }
 
     /**
