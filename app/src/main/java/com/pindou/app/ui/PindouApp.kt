@@ -124,9 +124,12 @@ fun PindouApp(vm: AppViewModel) {
             if (msg != null) {
                 // 1.8 秒自动收：Material 的 Short 是 4 秒，压在画布/工具条上
                 // 挡点击的时间太长。自己起一个计时协程提前 dismiss。
+                // 只收没有 action 的普通提示；带「撤销」的 Snackbar 要留给
+                // 用户点，提前 dismiss 会被当成 Dismissed 直接确认删除。
                 val autoHide = launch {
                     delay(1800)
-                    snackbarHostState.currentSnackbarData?.dismiss()
+                    val current = snackbarHostState.currentSnackbarData
+                    if (current?.visuals?.actionLabel == null) current?.dismiss()
                 }
                 snackbarHostState.showSnackbar(
                     message = msg,
