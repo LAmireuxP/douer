@@ -42,6 +42,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
@@ -87,6 +89,7 @@ fun StudioScreen(vm: AppViewModel) {
     val usedColorCount = remember(revision) { engine.usedColorCount() }
     val context = LocalContext.current
     val canvasState = remember { StudioCanvasState() }
+    val tourAnchors = remember { StudioTourAnchors() }
     var panel by remember { mutableStateOf<StudioPanel?>(null) }
     var paletteSheet by remember { mutableStateOf(false) }
     var discardDialog by remember { mutableStateOf(false) }
@@ -94,6 +97,10 @@ fun StudioScreen(vm: AppViewModel) {
     var textOrigin by remember { mutableIntStateOf(-1) }
     var moreMenu by remember { mutableStateOf(false) }
     var tutorialStep by remember { mutableIntStateOf(-1) }
+    var layersTour by remember { mutableStateOf(false) }
+    // 从「导入底层图片」这一步打开图层面板时记住下一站；面板关掉后教程继续，
+    // 不会因为中途去选图片就把后面工具/颜色/缩放的说明吞掉。
+    var tourResumeStep by remember { mutableIntStateOf(-1) }
     var pdfPreview by remember { mutableStateOf<ExportService.Exported.FileReady?>(null) }
     val exporter = rememberExporter { out -> if (out is ExportService.Exported.FileReady &&
         out.file.extension.equals("pdf", true)
@@ -129,6 +136,11 @@ fun StudioScreen(vm: AppViewModel) {
         }
     }
 
+    Box(
+        Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { tourAnchors.root = it.boundsInWindow() },
+    ) {
     Column(Modifier.fillMaxSize()) {
         // ---------------- 顶栏 ----------------
         Row(
@@ -163,6 +175,9 @@ fun StudioScreen(vm: AppViewModel) {
                         color = MaterialTheme.colorScheme.primary,
                         maxLines = 1,
                         modifier = Modifier
+                            .onGloballyPositioned {
+                                tourAnchors.canvasSize = it.boundsInWindow()
+                            }
                             .clip(RoundedCornerShape(5.dp))
                             .clickable { panel = StudioPanel.CANVAS }
                             .padding(horizontal = 3.dp, vertical = 1.dp),
@@ -240,6 +255,7 @@ fun StudioScreen(vm: AppViewModel) {
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
+                .onGloballyPositioned { tourAnchors.canvas = it.boundsInWindow() }
                 .padding(horizontal = Spacing.xs, vertical = 2.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .background(ClayColors.Stage)
@@ -263,6 +279,9 @@ fun StudioScreen(vm: AppViewModel) {
                     FloatingStudioPanel(
                         canvasW = canvasW,
                         canvasH = canvasH,
+                        modifier = Modifier.onGloballyPositioned {
+                            tourAnchors.toolRail = it.boundsInWindow()
+                        },
                         xFraction = session.toolX,
                         yFraction = session.toolY,
                         defaultX = 0f,
@@ -286,6 +305,9 @@ fun StudioScreen(vm: AppViewModel) {
                     FloatingStudioPanel(
                         canvasW = canvasW,
                         canvasH = canvasH,
+                        modifier = Modifier.onGloballyPositioned {
+                            tourAnchors.colorRail = it.boundsInWindow()
+                        },
                         xFraction = session.colorX,
                         yFraction = session.colorY,
                         defaultX = 1f,
@@ -314,6 +336,7 @@ fun StudioScreen(vm: AppViewModel) {
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
+                    .onGloballyPositioned { tourAnchors.zoom = it.boundsInWindow() }
                     .padding(6.dp)
                     .clip(RoundedCornerShape(9.dp))
                     .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
@@ -488,11 +511,18 @@ fun StudioScreen(vm: AppViewModel) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .onGloballyPositioned { tourAnchors.bottomBar = it.boundsInWindow() }
                 .background(MaterialTheme.colorScheme.surface)
                 .padding(horizontal = 4.dp, vertical = 3.dp),
             horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            BottomAction("图层", "第 ${engine.layerCount} 层", Modifier.weight(1f)) {
+            BottomAction(
+                "图层",
+                "第 ${engine.layerCount} 层",
+                Modifier
+                    .weight(1f)
+                    .onGloballyPositioned { tourAnchors.layersAction = it.boundsInWindow() },
+            ) {
                 panel = StudioPanel.LAYERS
             }
             BottomAction("帧", "${engine.frameCount} 帧", Modifier.weight(1f)) {
@@ -511,7 +541,23 @@ fun StudioScreen(vm: AppViewModel) {
     }
 
     when (panel) {
-        StudioPanel.LAYERS -> StudioLayersPanel(session) { panel = null }
+        StudioPanel.LAYERS -> StudioLayersPanel(
+            session = session,
+            tourActive = layersTour,
+            onTourDone = {
+                val next = tourResumeStep
+                layersTour = false
+                tourResumeStep = -1
+                panel = null
+                if (next >= 0) tutorialStep = next
+            },
+        ) {
+            val next = tourResumeStep
+            tourResumeStep = -1
+            panel = null
+            layersTour = false
+            if (next >= 0) tutorialStep = next
+        }
         StudioPanel.FRAMES -> StudioFramesPanel(
             session = session,
             playing = session.playing,
@@ -607,23 +653,32 @@ fun StudioScreen(vm: AppViewModel) {
         )
     }
 
-    if (tutorialStep >= 0) {
-        StudioTutorialDialog(
-            step = tutorialStep,
-            onStepChange = { tutorialStep = it },
-            onDismiss = {
-                tutorialStep = -1
-                vm.markStudioTutorialSeen()
-            },
-        )
-    }
-
     pdfPreview?.let { file ->
         PdfPreviewDialog(
             exported = file,
             onDismiss = { pdfPreview = null },
             onShare = { ExportService.shareFile(context, file) },
         )
+    }
+
+    if (tutorialStep >= 0) {
+        StudioTourOverlay(
+            step = tutorialStep,
+            anchors = tourAnchors,
+            canvasLabel = "${engine.width}×${engine.height}",
+            onStepChange = { tutorialStep = it },
+            onOpenLayerImport = {
+                tourResumeStep = tutorialStep + 1
+                tutorialStep = -1
+                panel = StudioPanel.LAYERS
+                layersTour = true
+            },
+            onDismiss = {
+                tutorialStep = -1
+                vm.markStudioTutorialSeen()
+            },
+        )
+    }
     }
 }
 
@@ -645,6 +700,7 @@ private fun dockHorizontal(xFraction: Float, yFraction: Float, defaultX: Float):
 private fun FloatingStudioPanel(
     canvasW: Float,
     canvasH: Float,
+    modifier: Modifier = Modifier,
     xFraction: Float,
     yFraction: Float,
     defaultX: Float,
@@ -697,7 +753,8 @@ private fun FloatingStudioPanel(
     Box(
         modifier = Modifier
             .onSizeChanged { panelSize = it }
-            .offset { IntOffset(x.roundToInt(), y.roundToInt()) },
+            .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
+            .then(modifier),
     ) {
         content(headerModifier)
     }

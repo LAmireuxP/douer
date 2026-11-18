@@ -16,7 +16,8 @@ val keystoreProps = Properties().apply {
 
 android {
     namespace = "com.pindou.app"
-    compileSdk = 34
+    // Compose 1.9（backdrop 依赖）要求 compileSdk 35；targetSdk 仍留 34，行为不变
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.pindou.app"
@@ -91,7 +92,7 @@ dependencies {
     implementation(libs.compose.ui.graphics)
     implementation(libs.compose.ui.tooling.preview)
     implementation(libs.compose.material3)
-    implementation(libs.haze)
+    implementation(libs.backdrop)
     implementation(libs.mlkit.subject.segmentation)
     implementation(libs.androidx.exifinterface)
     implementation(libs.kotlinx.serialization.json)

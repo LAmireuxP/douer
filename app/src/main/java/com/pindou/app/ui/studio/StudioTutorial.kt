@@ -1,22 +1,30 @@
 package com.pindou.app.ui.studio
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -24,222 +32,414 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.unit.sp
 import com.pindou.app.ui.icon.MorphIcons
 import com.pindou.app.ui.theme.Spacing
+import kotlin.math.roundToInt
 
-private data class TutorialPage(
+/**
+ * 教程锚点：全部存屏幕窗口坐标。
+ *
+ * 不用根节点局部坐标的原因：StudioScreen 外面还套着 Scaffold 的系统栏
+ * innerPadding，root 的 0,0 不在窗口左上角；存窗口坐标后，覆盖层只要减去
+ * 自己的 boundsInWindow 就能换算，横竖屏切换也不会错位。
+ */
+@Stable
+class StudioTourAnchors {
+    var root: Rect = Rect.Zero
+    var canvasSize: Rect? by mutableStateOf(null)
+    var canvas: Rect? by mutableStateOf(null)
+    var toolRail: Rect? by mutableStateOf(null)
+    var colorRail: Rect? by mutableStateOf(null)
+    var zoom: Rect? by mutableStateOf(null)
+    var bottomBar: Rect? by mutableStateOf(null)
+    var layersAction: Rect? by mutableStateOf(null)
+}
+
+private data class StudioTourStep(
     val icon: ImageVector,
     val title: String,
-    val summary: String,
-    val points: List<String>,
+    val body: String,
+    val placement: TourPlacement = TourPlacement.Auto,
+    val primaryAction: TourPrimaryAction = TourPrimaryAction.Next,
+    val target: (StudioTourAnchors) -> Rect?,
 )
 
-private val tutorialPages = listOf(
-    TutorialPage(
-        icon = MorphIcons.Hand,
-        title = "先认识画布",
-        summary = "画像素是逐格点色的工作区，先把看图和移动弄清楚。",
-        points = listOf(
-            "顶栏的 78×78 尺寸可以点击，直接打开画布设置。",
-            "单指拖动画布，双指缩放；双指开始时不会落笔。",
-            "画布右下角的「适应」随时回到完整画面。",
-        ),
-    ),
-    TutorialPage(
-        icon = MorphIcons.Brush,
-        title = "选颜色，再落笔",
-        summary = "左侧是颜色，右侧是工具。先选颜色再点格，最不容易画错。",
-        points = listOf(
-            "点左侧色块会自动切回画笔。",
-            "右侧有画笔、橡皮、油漆桶、吸管和移动。",
-            "吸管取色后会显示色号；移动工具只平移画布，不改像素。",
-        ),
-    ),
-    TutorialPage(
-        icon = StudioIcons.Layers,
-        title = "原图参考 + 自己画",
-        summary = "导入的图片只铺在底层作为原画参考，不会自动变成像素。",
-        points = listOf(
-            "底部「图层」→「导入底层图片」。",
-            "软件会保留原图颜色和细节，不会自动转成像素。",
-            "自动新建的「绘制层」才是你要逐格点色的图层。",
-            "底层原图不参与 PNG/PDF/GIF 导出，可在图层里隐藏或清除。",
-        ),
-    ),
-    TutorialPage(
+private enum class TourPlacement { Auto, RightOfTarget, LeftOfTarget }
+private enum class TourPrimaryAction { Next, OpenLayerImport }
+
+private fun tourSteps(canvasLabel: String) = listOf(
+    StudioTourStep(
         icon = MorphIcons.Grid,
-        title = "画得像、画得快",
-        summary = "常用工具都在右侧浮窗，底部动作栏负责图层、帧、选区和导出。",
-        points = listOf(
-            "画笔和橡皮支持笔刷大小、方形/圆形与对称。",
-            "直线、矩形、椭圆、多边形、曲线、渐变、文字都可用。",
-            "画错了点顶栏撤销；双指缩放/移动不会污染画面。",
-        ),
+        title = "先定画布尺寸",
+        body = "顶栏这个 $canvasLabel 可以点，随时改尺寸和参考线。" +
+            "新手先用 40×40 左右的小画布，格子大、好下笔。",
+        target = { it.canvasSize },
     ),
-    TutorialPage(
-        icon = MorphIcons.Download,
-        title = "保存和导出",
-        summary = "先完成保存，再从导出面板生成成品或继续施工。",
-        points = listOf(
-            "右上角「完成」保存当前画像素工程。",
-            "导出面板支持像素 PNG、GIF、色号图、PDF 和调色板。",
-            "新手建议先用 40×40 左右的小画布熟悉流程。",
-            "以后可从右上角「更多 → 新手教程」再次打开。",
-        ),
+    StudioTourStep(
+        icon = MorphIcons.Hand,
+        title = "单指画，双指看",
+        body = "单指拖动是上色；双指捏合缩放、双指拖动平移。" +
+            "双指刚落下时不会误画一格，放心把画布放大。",
+        // 整块画布几乎占满屏幕，挖满会看不到遮罩；只框上半段，
+        // 卡片放下面，既能指出画布位置又保留「聚光灯」层次。
+        target = { anchors ->
+            anchors.canvas?.let { canvas ->
+                Rect(
+                    left = canvas.left,
+                    top = canvas.top,
+                    right = canvas.right,
+                    bottom = canvas.top + canvas.height * 0.42f,
+                )
+            }
+        },
+    ),
+    StudioTourStep(
+        icon = MorphIcons.ImagePlus,
+        title = "把原图铺到底层",
+        body = "点底部「图层」→「导入底层图片」，选一张照片。" +
+            "照片只铺在绘制层下面做参考，不会自动转成像素，也不参与 PNG/PDF/GIF 导出。",
+        primaryAction = TourPrimaryAction.OpenLayerImport,
+        target = { it.layersAction },
+    ),
+    StudioTourStep(
+        icon = MorphIcons.Brush,
+        title = "左侧是工具",
+        body = "画笔、橡皮、油漆桶、吸管、形状都在左侧浮窗。" +
+            "按住浮窗顶部把手可以拖走，别挡住要画的位置。",
+        placement = TourPlacement.RightOfTarget,
+        target = { it.toolRail },
+    ),
+    StudioTourStep(
+        icon = MorphIcons.Palette,
+        title = "右侧是颜色",
+        body = "色号栏按品牌色卡分组，点色块就选中颜色。" +
+            "点顶部色号名可以换整套色卡，画出来的色号才能对上实物。",
+        placement = TourPlacement.LeftOfTarget,
+        target = { it.colorRail },
+    ),
+    StudioTourStep(
+        icon = MorphIcons.Expand,
+        title = "放大画细节",
+        body = "右下角 − / + 调倍率，「适应」一键回到完整画面。" +
+            "画眼睛、描边这类小结构时先放大，找整体位置时再缩回去。",
+        target = { it.zoom },
     ),
 )
 
+/**
+ * Tour 式新手引导：遮罩上按锚点挖洞，提示卡自动躲在洞的上方或下方，
+ * 找不到锚点时退化成居中的说明卡（比如横屏没有左右浮窗）。
+ */
 @Composable
-fun StudioTutorialDialog(
+fun StudioTourOverlay(
     step: Int,
+    anchors: StudioTourAnchors,
+    canvasLabel: String,
     onStepChange: (Int) -> Unit,
+    onOpenLayerImport: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val safeStep = step.coerceIn(tutorialPages.indices)
-    val page = tutorialPages[safeStep]
+    val steps = remember(canvasLabel) { tourSteps(canvasLabel) }
+    val safeStep = step.coerceIn(steps.indices)
+    val page = steps[safeStep]
+    val density = LocalDensity.current
+    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.35f
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
+    BackHandler(onBack = onDismiss)
+
+    val targetRect = page.target(anchors)
+    val root = anchors.root
+    val pad = with(density) { 8.dp.toPx() }
+    val corner = with(density) { 18.dp.toPx() }
+
+    val target = if (targetRect == null || root.width <= 0f) null else {
+        Rect(
+            left = targetRect.left - root.left - pad,
+            top = targetRect.top - root.top - pad,
+            right = targetRect.right - root.left + pad,
+            bottom = targetRect.bottom - root.top + pad,
+        )
+    }
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen },
     ) {
+        val fullW = constraints.maxWidth.toFloat()
+        val fullH = constraints.maxHeight.toFloat()
+        val margin = with(density) { 16.dp.toPx() }
+        val gap = with(density) { 14.dp.toPx() }
+        val defaultCardWidthPx =
+            minOf(fullW - margin * 2f, with(density) { 380.dp.toPx() })
+        val minSideCardWidthPx = with(density) { 220.dp.toPx() }
+        // 先给一个 230dp 的估值，真正布局后用 onSizeChanged 校正，
+        // 避免第一帧卡片从屏幕中心跳到洞口旁边。
+        var cardHeightPx by remember {
+            mutableStateOf(with(density) { 230.dp.toPx() })
+        }
+
+        // 洞的四条边分别做弹簧，换步骤时像镜头在移动，而不是整块瞬移
+        val holeLeft by animateFloatAsState(
+            targetValue = target?.left ?: (fullW / 2f),
+            animationSpec = spring(dampingRatio = 0.86f, stiffness = Spring.StiffnessMediumLow),
+            label = "tourHoleLeft",
+        )
+        val holeTop by animateFloatAsState(
+            targetValue = target?.top ?: (fullH / 2f),
+            animationSpec = spring(dampingRatio = 0.86f, stiffness = Spring.StiffnessMediumLow),
+            label = "tourHoleTop",
+        )
+        val holeRight by animateFloatAsState(
+            targetValue = target?.right ?: (fullW / 2f),
+            animationSpec = spring(dampingRatio = 0.86f, stiffness = Spring.StiffnessMediumLow),
+            label = "tourHoleRight",
+        )
+        val holeBottom by animateFloatAsState(
+            targetValue = target?.bottom ?: (fullH / 2f),
+            animationSpec = spring(dampingRatio = 0.86f, stiffness = Spring.StiffnessMediumLow),
+            label = "tourHoleBottom",
+        )
+
+        val hole = Rect(
+            left = holeLeft.coerceIn(0f, fullW),
+            top = holeTop.coerceIn(0f, fullH),
+            right = holeRight.coerceIn(0f, fullW),
+            bottom = holeBottom.coerceIn(0f, fullH),
+        )
+        val hasHole = target != null && hole.width > 1f && hole.height > 1f
+
+        val sideRightWidth = fullW - hole.right - gap - margin
+        val sideLeftWidth = hole.left - gap - margin
+        val sideRight = hasHole && page.placement == TourPlacement.RightOfTarget &&
+            sideRightWidth >= minSideCardWidthPx
+        val sideLeft = hasHole && page.placement == TourPlacement.LeftOfTarget &&
+            sideLeftWidth >= minSideCardWidthPx
+        val cardWidthPx = when {
+            sideRight -> minOf(defaultCardWidthPx, sideRightWidth)
+            sideLeft -> minOf(defaultCardWidthPx, sideLeftWidth)
+            else -> defaultCardWidthPx
+        }
+
+        val below = fullH - hole.bottom - gap - margin
+        val above = hole.top - gap - margin
+        val sideTop = (hole.center.y - cardHeightPx / 2f)
+            .coerceIn(margin, (fullH - cardHeightPx - margin).coerceAtLeast(margin))
+        val cardTop: Float
+        val cardLeft: Float
+        when {
+            sideRight -> {
+                cardLeft = hole.right + gap
+                cardTop = sideTop
+            }
+            sideLeft -> {
+                cardLeft = hole.left - gap - cardWidthPx
+                cardTop = sideTop
+            }
+            else -> {
+                cardLeft = if (hasHole) {
+                    (hole.center.x - cardWidthPx / 2f)
+                        .coerceIn(margin, fullW - margin - cardWidthPx)
+                } else {
+                    (fullW - cardWidthPx) / 2f
+                }
+                cardTop = when {
+                    !hasHole -> (fullH - cardHeightPx) / 2f
+                    below >= cardHeightPx -> hole.bottom + gap
+                    above >= cardHeightPx -> hole.top - gap - cardHeightPx
+                    else -> (fullH - cardHeightPx) / 2f
+                }.coerceIn(margin, (fullH - cardHeightPx - margin).coerceAtLeast(margin))
+            }
+        }
+
+        val scrim = Color.Black.copy(alpha = if (isDark) 0.66f else 0.50f)
+        val accent = MaterialTheme.colorScheme.primary
+
+        // 全屏吃点击，防止引导期间误触画布；Canvas 负责挖洞和描边
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { },
+        ) {
+            Canvas(Modifier.fillMaxSize()) {
+                drawRect(scrim)
+                if (hasHole) {
+                    val holeSize = Size(hole.width, hole.height)
+                    val topLeft = Offset(hole.left, hole.top)
+                    // Clear 只在离屏层里生效，不会把下面的页面一起擦掉
+                    drawRoundRect(
+                        color = Color.Black,
+                        topLeft = topLeft,
+                        size = holeSize,
+                        cornerRadius = CornerRadius(corner, corner),
+                        blendMode = BlendMode.Clear,
+                    )
+                    drawRoundRect(
+                        color = accent.copy(alpha = 0.16f),
+                        topLeft = topLeft - Offset(3.dp.toPx(), 3.dp.toPx()),
+                        size = Size(
+                            holeSize.width + 6.dp.toPx(),
+                            holeSize.height + 6.dp.toPx(),
+                        ),
+                        cornerRadius = CornerRadius(corner + 3.dp.toPx(), corner + 3.dp.toPx()),
+                        style = Stroke(width = 6.dp.toPx()),
+                    )
+                    drawRoundRect(
+                        color = accent.copy(alpha = 0.92f),
+                        topLeft = topLeft,
+                        size = holeSize,
+                        cornerRadius = CornerRadius(corner, corner),
+                        style = Stroke(width = 1.6.dp.toPx()),
+                    )
+                }
+            }
+        }
+
         Surface(
             modifier = Modifier
-                .fillMaxWidth(0.92f)
-                .widthIn(max = 520.dp)
-                .heightIn(max = 680.dp),
+                .offset { IntOffset(cardLeft.roundToInt(), cardTop.roundToInt()) }
+                .width(with(density) { cardWidthPx.toDp() })
+                .onSizeChanged { cardHeightPx = it.height.toFloat() },
             shape = RoundedCornerShape(24.dp),
             color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 8.dp,
+            tonalElevation = 2.dp,
+            shadowElevation = 20.dp,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)),
         ) {
-            Column(Modifier.padding(Spacing.lg)) {
+            Column(Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.md)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        "新手教程",
-                        style = MaterialTheme.typography.labelLarge,
+                        "新手引导",
+                        style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Spacer(Modifier.weight(1f))
                     Text(
-                        "${safeStep + 1} / ${tutorialPages.size}",
-                        style = MaterialTheme.typography.labelMedium,
+                        "${safeStep + 1} / ${steps.size}",
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    TextButton(onClick = onDismiss) { Text("跳过") }
-                }
-
-                Column(
-                    modifier = Modifier
-                        .weight(1f, fill = false)
-                        .verticalScroll(rememberScrollState()),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(top = Spacing.xs),
-                        verticalAlignment = Alignment.CenterVertically,
+                    TextButton(
+                        onClick = onDismiss,
+                        contentPadding = PaddingValues(horizontal = 8.dp),
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(64.dp)
-                                .background(
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                                    CircleShape,
-                                ),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                page.icon,
-                                contentDescription = null,
-                                modifier = Modifier.size(32.dp),
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                        Spacer(Modifier.width(Spacing.md))
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                page.title,
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                page.summary,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 4.dp),
-                            )
-                        }
-                    }
-
-                    Spacer(Modifier.height(Spacing.md))
-                    page.points.forEachIndexed { index, point ->
-                        Row(
-                            modifier = Modifier.padding(vertical = 5.dp),
-                            verticalAlignment = Alignment.Top,
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(22.dp)
-                                    .background(
-                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                                        CircleShape,
-                                    ),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(
-                                    "${index + 1}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                            }
-                            Spacer(Modifier.width(Spacing.sm))
-                            Text(
-                                point,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                        }
+                        Text("跳过", style = MaterialTheme.typography.labelMedium)
                     }
                 }
 
-                Spacer(Modifier.height(Spacing.md))
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.padding(top = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    repeat(tutorialPages.size) { index ->
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.13f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            page.icon,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(23.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(Spacing.sm))
+                    Text(
+                        page.title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+
+                Text(
+                    page.body,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    lineHeight = 21.sp,
+                    modifier = Modifier.padding(top = Spacing.sm),
+                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = Spacing.md),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    repeat(steps.size) { index ->
                         Box(
                             modifier = Modifier
-                                .size(if (index == safeStep) 18.dp else 7.dp, 7.dp)
+                                .size(if (index == safeStep) 16.dp else 6.dp, 6.dp)
                                 .background(
                                     if (index == safeStep) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+                                    else MaterialTheme.colorScheme.outline,
                                     RoundedCornerShape(999.dp),
                                 ),
                         )
                     }
                     Spacer(Modifier.weight(1f))
-                    TextButton(
-                        onClick = { onStepChange(safeStep - 1) },
-                        enabled = safeStep > 0,
-                    ) { Text("上一步") }
+                    if (safeStep > 0) {
+                        TextButton(
+                            onClick = { onStepChange(safeStep - 1) },
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                        ) {
+                            Text("上一步", style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
                     Button(
                         onClick = {
-                            if (safeStep < tutorialPages.lastIndex) onStepChange(safeStep + 1)
-                            else onDismiss()
+                            when {
+                                page.primaryAction == TourPrimaryAction.OpenLayerImport ->
+                                    onOpenLayerImport()
+                                safeStep < steps.lastIndex -> onStepChange(safeStep + 1)
+                                else -> onDismiss()
+                            }
                         },
+                        modifier = Modifier.height(38.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp),
                     ) {
-                        Text(if (safeStep < tutorialPages.lastIndex) "下一步" else "开始画")
+                        Text(
+                            when {
+                                page.primaryAction == TourPrimaryAction.OpenLayerImport -> "去导入"
+                                safeStep < steps.lastIndex -> "下一步"
+                                else -> "开始画"
+                            },
+                            style = MaterialTheme.typography.labelLarge,
+                        )
                     }
                 }
             }

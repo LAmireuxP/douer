@@ -5,11 +5,13 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -56,7 +58,12 @@ import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StudioLayersPanel(session: StudioSession, onClose: () -> Unit) {
+fun StudioLayersPanel(
+    session: StudioSession,
+    tourActive: Boolean = false,
+    onTourDone: () -> Unit = {},
+    onClose: () -> Unit,
+) {
     if (session.revision < 0) return
     val engine = session.engine
     val reference = engine.reference
@@ -87,6 +94,8 @@ fun StudioLayersPanel(session: StudioSession, onClose: () -> Unit) {
                 session.act { it.importReferenceImage(imported) }
                 importStatus = "已导入底层原图；软件不会自动转像素，请在上层手动画"
                 Toast.makeText(context, "原图已铺到底层，可直接在上层点像素", Toast.LENGTH_SHORT).show()
+                // 只有教程状态才收起面板并继续；手动打开图层时保持原流程
+                if (tourActive) onTourDone()
             }.onFailure {
                 importStatus = "导入失败：${it.message ?: "无法读取图片"}"
             }
@@ -107,6 +116,57 @@ fun StudioLayersPanel(session: StudioSession, onClose: () -> Unit) {
                 "第 ${engine.frameIndex + 1} 帧 · ${engine.layerCount} 层 · 当前「${engine.activeLayer.name}」",
                 onClose,
             )
+            if (tourActive) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Spacing.md, vertical = 4.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
+                        .border(
+                            1.dp,
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.38f),
+                            RoundedCornerShape(14.dp),
+                        )
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.Top) {
+                        Icon(
+                            MorphIcons.ImagePlus,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .padding(top = 1.dp)
+                                .size(20.dp),
+                        )
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(start = 8.dp),
+                        ) {
+                            Text(
+                                "下一步：导入底层图片",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "点下面被高亮的「导入底层图片」选一张照片。" +
+                                    "照片只铺在绘制层下面做参考，不会自动转成像素，也不参与 PNG/PDF/GIF 导出。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                    }
+                    TextButton(
+                        onClick = onTourDone,
+                        modifier = Modifier.align(Alignment.End),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    ) {
+                        Text("知道了", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
             FlowRow(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -117,6 +177,7 @@ fun StudioLayersPanel(session: StudioSession, onClose: () -> Unit) {
                 ActionChip(
                     text = if (importing) "正在导入…" else "导入底层图片",
                     enabled = !importing,
+                    attention = tourActive,
                 ) { imageLauncher.launch(arrayOf("image/*")) }
                 ActionChip("清除底层图", enabled = reference != null) {
                     session.act { it.clearReference() }

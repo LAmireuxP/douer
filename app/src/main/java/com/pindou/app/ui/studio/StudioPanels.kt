@@ -733,17 +733,29 @@ internal fun PanelHeader(title: String, subtitle: String? = null, onClose: () ->
 @Composable
 internal fun ActionChip(
     text: String,
+    modifier: Modifier = Modifier,
     selected: Boolean = false,
     enabled: Boolean = true,
+    attention: Boolean = false,
     onClick: () -> Unit,
 ) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .clip(RoundedCornerShape(999.dp))
-            .background(if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface)
+            .background(
+                when {
+                    selected -> MaterialTheme.colorScheme.primary
+                    attention -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                    else -> MaterialTheme.colorScheme.surface
+                },
+            )
             .border(
-                1.dp,
-                if (selected) Color.Transparent else MaterialTheme.colorScheme.outline,
+                if (attention) 2.dp else 1.dp,
+                when {
+                    selected -> Color.Transparent
+                    attention -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.outline
+                },
                 RoundedCornerShape(999.dp),
             )
             .clickable(enabled = enabled, onClick = onClick)

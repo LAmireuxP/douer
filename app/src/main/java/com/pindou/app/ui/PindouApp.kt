@@ -2,14 +2,20 @@ package com.pindou.app.ui
 
 import com.pindou.app.ui.icon.MorphIcons
 import com.pindou.app.ui.theme.ClayColors
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -41,20 +48,27 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.HazeStyle
-import dev.chrisbanes.haze.haze
-import dev.chrisbanes.haze.hazeChild
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
+import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.highlight.HighlightStyle
+import com.kyant.backdrop.shadow.InnerShadow
+import com.kyant.backdrop.shadow.Shadow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -151,8 +165,13 @@ fun PindouApp(vm: AppViewModel) {
         vm.selectHomeTab(HomeTab.LIBRARY)
     }
 
-    // 底栏毛玻璃的取样源：页面内容画进这一层，底栏再从里面取背景做模糊
-    val hazeState = remember { HazeState() }
+    // 底栏玻璃的取样源：页面内容先画进 graphics layer，底栏按全局坐标
+    // 回采这块内容，才能真正出现「透过玻璃看到列表」的折射。
+    val backdropColor = MaterialTheme.colorScheme.background
+    val backdrop = rememberLayerBackdrop {
+        drawRect(backdropColor)
+        drawContent()
+    }
 
     Scaffold(
         // 结果提示做成小药丸：默认的整条 Snackbar 又宽又高，会盖住底部工具条
@@ -182,7 +201,7 @@ fun PindouApp(vm: AppViewModel) {
             Box(
                 Modifier
                     .fillMaxSize()
-                    .haze(hazeState),
+                    .layerBackdrop(backdrop),
             ) {
                 Box(Modifier.padding(innerPadding)) {
                     when (vm.screen) {
@@ -210,7 +229,7 @@ fun PindouApp(vm: AppViewModel) {
             val selectionBarActive = vm.homeTab == HomeTab.LIBRARY && vm.librarySelecting
             if (vm.screen == Screen.HOME && !selectionBarActive) {
                 GlassBottomBar(
-                    hazeState = hazeState,
+                    backdrop = backdrop,
                     current = vm.homeTab,
                     onSelect = vm::selectHomeTab,
                     modifier = Modifier.align(Alignment.BottomCenter),
@@ -245,38 +264,32 @@ private fun HomeScreen(
 }
 
 /**
- * 底部玻璃导航。
+ * 底部液体玻璃导航。
  *
- * 关键不是“白色半透明条”，而是让底下的卡片和缩略图真的透上来：
- * 低透明度 tint + 34dp 模糊只负责压住噪点，识别度交给顶部的镜面高光、
- * 1dp 亮边和选中项自己的小玻璃片。底栏不再铺满整行，而是离边 20dp 的
- * 悬浮胶囊，滚到底时内容会从胶囊两侧露出来。
+ * 三层结构，缺一层都不像玻璃：
+ * 1. 页面内容先录进 backdrop 的 graphics layer；
+ * 2. 底栏用 RenderEffect 链做 vibrancy → blur → lens，边缘按圆角 SDF
+ *    折射，选中项再叠一块折射更强的小透镜；
+ * 3. 玻璃表面只留一层很薄的白色渐变，高光/内阴影/投影由 backdrop 的
+ *    Highlight/InnerShadow/Shadow 画，避免以前整条发白、字看不清。
  *
- * 注意：底栏不占 Scaffold 的 bottomBar 槽位，三个首页列表末尾都留了
- * 104dp 的滚动余量，最后一行不会被胶囊压住。
+ * API < 31 没有 RenderEffect，退回 80% 不透明底色；布局和交互不变。
+ * 底栏不占 Scaffold 的 bottomBar 槽位，三个首页列表末尾都留了滚动余量。
  */
 @Composable
 private fun GlassBottomBar(
-    hazeState: HazeState,
+    backdrop: Backdrop,
     current: HomeTab,
     onSelect: (HomeTab) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val shape = RoundedCornerShape(30.dp)
-    val surface = MaterialTheme.colorScheme.surface
-    val dark = surface.luminance() < 0.35f
-    val selectedInk = if (dark) MaterialTheme.colorScheme.primary else ClayColors.PrimaryInk
-    val idleInk = if (dark) Color.White.copy(alpha = 0.62f) else ClayColors.Body.copy(alpha = 0.68f)
-    val activeGlassTop =
-        if (dark) Color.White.copy(alpha = 0.14f)
-        else MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-    val activeGlassBottom =
-        if (dark) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-        else MaterialTheme.colorScheme.primary.copy(alpha = 0.09f)
-    val activeEdge =
-        if (dark) Color.White.copy(alpha = 0.22f)
-        else MaterialTheme.colorScheme.primary.copy(alpha = 0.26f)
-    val hairline = if (dark) Color.White.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.72f)
+    val shape = RoundedCornerShape(32.dp)
+    val dark = MaterialTheme.colorScheme.surface.luminance() < 0.35f
+    val accent = MaterialTheme.colorScheme.primary
+    val selectedInk = if (dark) Color.White else ClayColors.PrimaryInk
+    val idleInk = if (dark) Color.White.copy(alpha = 0.60f) else ClayColors.Body.copy(alpha = 0.56f)
+    val glassTint = if (dark) Color(0xFF0A1117) else Color.White
+    val selectedIndex = Tabs.indexOfFirst { it.target == current }.coerceAtLeast(0)
 
     Box(
         modifier = modifier
@@ -284,135 +297,177 @@ private fun GlassBottomBar(
             .padding(horizontal = 20.dp, vertical = 10.dp)
             .widthIn(max = 372.dp)
             .fillMaxWidth()
-            .shadow(
-                elevation = 12.dp,
-                shape = shape,
-                clip = false,
-                ambientColor = Color.Black.copy(alpha = if (dark) 0.30f else 0.05f),
-                spotColor = Color.Black.copy(alpha = if (dark) 0.38f else 0.12f),
-            )
-            .clip(shape)
-            .hazeChild(
-                state = hazeState,
-                shape = shape,
-                style = HazeStyle(
-                    // 20% 白 + 34dp 模糊：卡片颜色能透上来，文字仍有足够底
-                    tint = if (dark) Color(0xFF0D141B).copy(alpha = 0.34f)
-                    else Color.White.copy(alpha = 0.20f),
-                    blurRadius = 34.dp,
-                    noiseFactor = 0.015f,
-                ),
-            )
-            .background(
-                Brush.verticalGradient(
-                    0f to Color.White.copy(alpha = if (dark) 0.10f else 0.12f),
-                    0.48f to Color.White.copy(alpha = if (dark) 0.03f else 0.03f),
-                    1f to Color.White.copy(alpha = if (dark) 0.02f else 0.06f),
-                ),
-            )
-            // 斜向镜面：左下到右上的对角线反光，避免整块发白，只在左上角亮
-            .drawWithContent {
-                drawRect(
-                    brush = Brush.linearGradient(
-                        0f to Color.White.copy(alpha = if (dark) 0.09f else 0.26f),
-                        0.26f to Color.White.copy(alpha = if (dark) 0.03f else 0.08f),
-                        0.52f to Color.Transparent,
-                        1f to Color.Transparent,
-                        start = Offset(0f, 0f),
-                        end = Offset(size.width * 0.9f, size.height * 1.35f),
-                    ),
-                )
-                drawContent()
-            }
-            .border(
-                width = 1.dp,
-                brush = Brush.verticalGradient(
-                    0f to Color.White.copy(alpha = if (dark) 0.30f else 0.95f),
-                    0.18f to Color.White.copy(alpha = if (dark) 0.18f else 0.58f),
-                    0.72f to hairline.copy(alpha = if (dark) 0.18f else 0.28f),
-                    1f to Color.White.copy(alpha = if (dark) 0.10f else 0.46f),
-                ),
-                shape = shape,
-            )
-            // 顶部一道横向高光，边缘淡出，像玻璃上沿的反光
-            .drawWithContent {
-                drawContent()
-                val inset = 10.dp.toPx()
-                drawLine(
-                    brush = Brush.horizontalGradient(
-                        0f to Color.Transparent,
-                        0.18f to Color.White.copy(alpha = if (dark) 0.16f else 0.82f),
-                        0.55f to Color.White.copy(alpha = if (dark) 0.20f else 0.92f),
-                        0.82f to Color.White.copy(alpha = if (dark) 0.12f else 0.70f),
-                        1f to Color.Transparent,
-                    ),
-                    start = Offset(inset, 0.8.dp.toPx()),
-                    end = Offset(size.width - inset, 0.8.dp.toPx()),
-                    strokeWidth = 0.8.dp.toPx(),
-                )
-            }
-            .padding(horizontal = 8.dp, vertical = 6.dp),
+            .height(64.dp)
+            .drawBackdrop(
+                backdrop = backdrop,
+                shape = { shape },
+                effects = {
+                    vibrancy()
+                    // 12dp 是 64dp 高胶囊的甜点：再高会把图标边缘糊掉，
+                    // 再低则列表文字会从玻璃里透出来抢注意力。
+                    blur(12.dp.toPx())
+                    lens(
+                        refractionHeight = 14.dp.toPx(),
+                        refractionAmount = 26.dp.toPx(),
+                        depthEffect = true,
+                        chromaticAberration = true,
+                    )
+                },
+                highlight = {
+                    Highlight(
+                        width = 1.dp,
+                        blurRadius = 0.5.dp,
+                        alpha = if (dark) 0.95f else 0.90f,
+                        style = HighlightStyle.Default(
+                            intensity = if (dark) 0.55f else 0.72f,
+                            angle = 45f,
+                            falloff = 1.1f,
+                        ),
+                    )
+                },
+                shadow = {
+                    Shadow(
+                        radius = 22.dp,
+                        offset = DpOffset(0.dp, 10.dp),
+                        color = Color.Black.copy(alpha = if (dark) 0.42f else 0.16f),
+                    )
+                },
+                innerShadow = {
+                    InnerShadow(
+                        radius = 8.dp,
+                        offset = DpOffset(0.dp, 1.dp),
+                        color = Color.White.copy(alpha = if (dark) 0.18f else 0.55f),
+                        alpha = 0.9f,
+                    )
+                },
+                onDrawSurface = {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                        drawRect(glassTint.copy(alpha = if (dark) 0.86f else 0.80f))
+                    }
+                    drawRect(
+                        Brush.verticalGradient(
+                            0f to Color.White.copy(alpha = if (dark) 0.10f else 0.38f),
+                            0.45f to Color.White.copy(alpha = if (dark) 0.02f else 0.14f),
+                            0.75f to Color.Transparent,
+                            1f to if (dark) Color.White.copy(alpha = 0.05f)
+                            else accent.copy(alpha = 0.05f),
+                        ),
+                    )
+                },
+            ),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        BoxWithConstraints(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 6.dp, vertical = 6.dp),
         ) {
-            Tabs.forEach { tab ->
-                val selected = current == tab.target
-                val tint = if (selected) selectedInk else idleInk
-
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .padding(horizontal = 2.dp)
-                        .clip(RoundedCornerShape(22.dp))
-                        .clickable { onSelect(tab.target) },
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .width(56.dp)
-                            .height(30.dp)
-                            .clip(RoundedCornerShape(15.dp))
-                            .background(
-                                if (selected) {
-                                    Brush.verticalGradient(
-                                        0f to activeGlassTop,
-                                        1f to activeGlassBottom,
-                                    )
-                                } else {
-                                    Brush.verticalGradient(
-                                        0f to Color.Transparent,
-                                        1f to Color.Transparent,
-                                    )
-                                },
+            val slot = maxWidth / Tabs.size
+            // 一块玻璃片在三个槽位间移动，比每个 tab 各闪一下更像液体
+            val pillX by animateDpAsState(
+                targetValue = slot * selectedIndex,
+                animationSpec = spring(
+                    dampingRatio = 0.82f,
+                    stiffness = Spring.StiffnessMediumLow,
+                ),
+                label = "glassTabPill",
+            )
+            Box(
+                Modifier
+                    .offset { IntOffset(pillX.roundToPx(), 0) }
+                    .width(slot)
+                    .fillMaxHeight()
+                    .padding(horizontal = 3.dp)
+                    .drawBackdrop(
+                        backdrop = backdrop,
+                        shape = { RoundedCornerShape(26.dp) },
+                        effects = {
+                            vibrancy()
+                            blur(4.dp.toPx())
+                            lens(
+                                refractionHeight = 8.dp.toPx(),
+                                refractionAmount = 16.dp.toPx(),
+                                depthEffect = true,
                             )
-                            .border(
-                                width = 1.dp,
-                                color = if (selected) activeEdge else Color.Transparent,
-                                shape = RoundedCornerShape(15.dp),
-                            ),
-                        contentAlignment = Alignment.Center,
+                        },
+                        highlight = {
+                            Highlight(
+                                width = 0.8.dp,
+                                alpha = if (dark) 0.55f else 0.75f,
+                                style = HighlightStyle.Default(
+                                    intensity = if (dark) 0.40f else 0.55f,
+                                    angle = 45f,
+                                    falloff = 1.2f,
+                                ),
+                            )
+                        },
+                        shadow = null,
+                        innerShadow = {
+                            InnerShadow(
+                                radius = 5.dp,
+                                offset = DpOffset(0.dp, 1.dp),
+                                color = Color.White.copy(alpha = if (dark) 0.12f else 0.40f),
+                            )
+                        },
+                        onDrawSurface = {
+                            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                                drawRect(accent.copy(alpha = 0.24f))
+                            }
+                            drawRect(
+                                Brush.verticalGradient(
+                                    0f to accent.copy(alpha = if (dark) 0.26f else 0.20f),
+                                    1f to accent.copy(alpha = if (dark) 0.10f else 0.08f),
+                                ),
+                            )
+                        },
+                    ),
+            )
+
+            Row(
+                modifier = Modifier.fillMaxSize(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Tabs.forEach { tab ->
+                    val selected = current == tab.target
+                    val tint = if (selected) selectedInk else idleInk
+                    val interaction = remember { MutableInteractionSource() }
+                    val pressed by interaction.collectIsPressedAsState()
+                    val pressScale by animateFloatAsState(
+                        targetValue = if (pressed) 0.92f else 1f,
+                        animationSpec = spring(stiffness = Spring.StiffnessMedium),
+                        label = "tabPress",
+                    )
+
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .graphicsLayer {
+                                scaleX = pressScale
+                                scaleY = pressScale
+                            }
+                            .clip(RoundedCornerShape(24.dp))
+                            .clickable(
+                                interactionSource = interaction,
+                                indication = null,
+                            ) { onSelect(tab.target) },
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
                     ) {
                         Icon(
                             imageVector = if (selected) tab.filled else tab.outlined,
                             contentDescription = tab.label,
                             tint = tint,
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier.size(21.dp),
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = tab.label,
+                            color = tint,
+                            fontSize = 10.sp,
+                            lineHeight = 12.sp,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
                         )
                     }
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = tab.label,
-                        color = tint,
-                        fontSize = 10.sp,
-                        lineHeight = 12.sp,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                    )
                 }
             }
         }
