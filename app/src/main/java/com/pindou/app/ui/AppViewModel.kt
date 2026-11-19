@@ -32,7 +32,6 @@ import com.pindou.app.core.pattern.GenerationStage
 import com.pindou.app.core.pattern.AiSubjectSegmenter
 import com.pindou.app.core.pattern.BpatCodec
 import com.pindou.app.core.pattern.GeneratorOptions
-import com.pindou.app.core.pattern.AutoTuner
 import com.pindou.app.core.pattern.FilterLevel
 import com.pindou.app.core.pattern.PatternGenerator
 import com.pindou.app.core.pattern.PatternResult
@@ -51,6 +50,7 @@ import com.pindou.app.ui.theme.AppThemes
 import com.pindou.app.ui.pixel.PixelCalibrationController
 import com.pindou.app.ui.library.ProjectLibraryController
 import com.pindou.app.ui.crop.CropController
+import com.pindou.app.ui.generate.GenerationController
 import com.pindou.app.ui.studio.StudioPersistence
 import com.pindou.app.ui.studio.StudioSession
 import com.pindou.app.ui.chart.ChartCalibrationController
@@ -127,8 +127,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val cropAspectMode: CropAspectMode get() = cropController.cropAspectMode
 
     private var cropReturn = Screen.HOME
-    private var generationJob: Job? = null
-    private var autoTuneJob: Job? = null
+    private var textGenerationJob: Job? = null
 
     /** 参数页返回目标：true = 从裁剪页确认过来，返回时回裁剪页 */
     private var paramsFromCrop = false
@@ -294,23 +293,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // 过滤等级：四档，默认中过滤
     var filterLevel by mutableStateOf(com.pindou.app.core.pattern.FilterLevel.MEDIUM)
 
-    var genState by mutableStateOf<GenState>(GenState.Idle)
-        private set
+    private val generationController = GenerationController(viewModelScope, GenerationHost())
 
-    /** 自动优选结果说明（"自动优选：高过滤 · 还原度 79 …"），null = 未跑过 */
-    var autoTuneInfo by mutableStateOf<String?>(null)
-        private set
+    var genState: GenState
+        get() = generationController.state
+        private set(value) {
+            generationController.state = value
+        }
 
-    /**
-     * 自动优选的逐档得分（过滤档名 → 该档最高分，按档位顺序）。
-     * 展示四档分数，便于判断档位之间的差距。
-     */
-    var autoTuneScores by mutableStateOf<List<Pair<String, Int>>>(emptyList())
-        private set
-
-    /** 自动优选进行中（要多跑几组参数，UI 单独禁用按钮） */
-    var autoTuneRunning by mutableStateOf(false)
-        private set
+    val autoTuneInfo: String? get() = generationController.autoTuneInfo
+    val autoTuneScores: List<Pair<String, Int>> get() = generationController.autoTuneScores
+    val autoTuneRunning: Boolean get() = generationController.autoTuneRunning
 
     // 施工模式
     var construction by mutableStateOf<ConstructionState?>(null)
@@ -462,12 +455,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 换图/离开当前生成流程时，先把旧的后台生成停掉，避免旧结果落库。 */
     private fun cancelGeneration() {
-        generationJob?.cancel()
-        generationJob = null
-        autoTuneJob?.cancel()
-        autoTuneJob = null
-        autoTuneRunning = false
-        if (genState is GenState.Running) genState = GenState.Idle
+        textGenerationJob?.cancel()
+        textGenerationJob = null
+        generationController.cancel()
     }
 
     /** Photo Picker / GetContent 回调：解码并限制最大边 2048 */
@@ -752,44 +742,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun generate() {
-        if (genState is GenState.Running || autoTuneRunning) return
-        val pixels = imagePixels ?: return
-        val palette = selectedPalette ?: return
-        val w = imageW
-        val h = imageH
-        if (w <= 0 || h <= 0 || pixels.size != w * h) {
-            lastError = "源图尺寸未就绪，请重新导入"
-            return
-        }
-        generationJob?.cancel()
-        projectPages = emptyList()
-        // 手动生成后清空自动优选结论
-        autoTuneInfo = null
-        autoTuneScores = emptyList()
-        genState = GenState.Running(GenerationStage.DOWNSAMPLE, 0f)
-        generationJob = viewModelScope.launch(Dispatchers.Default) {
-            try {
-                val options = currentOptions().copy(subjectMask = prepareAiMask())
-                val result = PatternGenerator.generate(
-                    pixels, w, h,
-                    options,
-                    palette,
-                ) { stage, progress ->
-                    genState = GenState.Running(stage, progress)
-                }
-                genState = GenState.Done(result)
-                saveAfterGenerate(result)
-                withContext(Dispatchers.Main) {
-                    previewReturn = Screen.PARAMS
-                    previewReturnTab = null
-                    screen = Screen.PREVIEW
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                genState = GenState.Error(e.message ?: "生成失败")
-            }
-        }
+        textGenerationJob?.cancel()
+        textGenerationJob = null
+        generationController.generate()
     }
 
     /** 当前 UI 参数 → 管线参数；generate 与 autoTune 共用，避免两处漂移 */
@@ -809,94 +764,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         autoFrame = autoFrame,
     )
 
-    /**
-     * 自动优选：跑 4 个过滤档（未限色时再加一个 20 色档），按还原度评分取最高。
-     *
-     * 选中后把结果写回 UI 参数（过滤档/限色），用户能看见"它替我做了什么选择"，
-     * 下次手动生成会沿用同一组参数——不是一次性黑箱。
-     */
     fun autoTune() {
-        val pixels = imagePixels ?: return
-        val palette = selectedPalette ?: return
-        if (autoTuneRunning || genState is GenState.Running) return
-        val w = imageW
-        val h = imageH
-        if (w <= 0 || h <= 0 || pixels.size != w * h) {
-            lastError = "源图尺寸未就绪，请重新导入"
-            return
-        }
-        autoTuneJob?.cancel()
-        val base = currentOptions()
-        projectPages = emptyList()
-        autoTuneRunning = true
-        autoTuneInfo = null
-        autoTuneScores = emptyList()
-        genState = GenState.Running(GenerationStage.DOWNSAMPLE, 0f)
-        autoTuneJob = viewModelScope.launch(Dispatchers.Default) {
-            try {
-                val tunedBase = base.copy(subjectMask = prepareAiMask())
-                val outcome = AutoTuner.sweep(
-                    pixels, w, h, tunedBase, palette,
-                    // 像素画只比「无过滤」一档：聚类/限色都会把原画的离散色块
-                    // 重新揉成过渡色，和"一比一还原画像素"目标相反。
-                    levels = if (pixelArtGrid != null) {
-                        listOf(FilterLevel.NONE)
-                    } else {
-                        FilterLevel.entries.toList()
-                    },
-                    maxColorsOptions = if (pixelArtGrid != null) {
-                        listOf(base.maxColors)
-                    } else {
-                        AutoTuner.defaultColorOptions(base)
-                    },
-                ) { done, total, _ ->
-                    // 进度按组数推进，视觉上要动；最后一组留给评分/落库
-                    genState = GenState.Running(GenerationStage.MAP, done.toFloat() / total)
-                } ?: throw IllegalStateException("没有可用参数组合")
-
-                val best = outcome.best
-                filterLevel = best.filterLevel
-                if (best.maxColors != null) {
-                    limitColors = true
-                    maxColors = best.maxColors
-                } else {
-                    limitColors = false
-                }
-                // 与"用户原来那组参数"对比，告诉他人话上的收益
-                val baseline = outcome.all.firstOrNull {
-                    it.filterLevel == base.filterLevel && it.maxColors == base.maxColors
-                }
-                val gain = if (baseline != null) best.score - baseline.score else 0
-                autoTuneScores = FilterLevel.entries.mapNotNull { lvl ->
-                    outcome.all.filter { it.filterLevel == lvl }
-                        .maxByOrNull { it.score }
-                        ?.let { lvl.label to it.score }
-                }
-                val qualityText = if (best.result.pixelArt) {
-                    "逐像素还原 · 平均色差 %.1f · %d 色".format(
-                        best.result.quality.meanDeltaE, best.result.quality.colorCount,
-                    )
-                } else {
-                    best.result.quality.summary()
-                }
-                autoTuneInfo = "自动优选：${best.filterLevel.label} · " +
-                    (best.maxColors?.let { "$it 色" } ?: "不限色") + " · " + qualityText +
-                    if (gain > 0) " · 比原参数高 $gain 分" else ""
-                genState = GenState.Done(best.result)
-                saveAfterGenerate(best.result)
-                // 停在参数页：逐档得分和结论要给人看见，自动跳预览等于把
-                // 刚算出来的对比信息扔掉。看完由用户点"查看图纸"进预览。
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                genState = GenState.Error(e.message ?: "自动优选失败")
-            } finally {
-                if (autoTuneJob === coroutineContext[Job]) {
-                    autoTuneRunning = false
-                    autoTuneJob = null
-                }
-            }
-        }
+        textGenerationJob?.cancel()
+        textGenerationJob = null
+        generationController.autoTune()
     }
 
     /** 自动优选跑完但还没进预览时，用这个入口看结果（不重算、不清得分） */
@@ -1400,7 +1271,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val palette = selectedPalette ?: return
         if (text.isBlank()) return
         if (genState is GenState.Running || autoTuneRunning) return
-        generationJob?.cancel()
+        generationController.cancel()
+        textGenerationJob?.cancel()
         val w = (width ?: gridW).coerceIn(5, 200)
         val h = (height ?: gridH).coerceIn(5, 200)
         gridW = w
@@ -1409,7 +1281,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         textSource = text
         projectPages = emptyList()
         genState = GenState.Running(GenerationStage.DOWNSAMPLE, 0f)
-        generationJob = viewModelScope.launch(Dispatchers.Default) {
+        textGenerationJob = viewModelScope.launch(Dispatchers.Default) {
             try {
                 val bitmap = TextRasterizer.rasterize(text, w, h)
                 val pixels = IntArray(bitmap.width * bitmap.height)
@@ -2173,6 +2045,52 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun paletteFor(brand: String, beadSizeTag: String): BeadPalette? =
         PaletteAssets.pick(palettes, brand, beadSizeTag)
+
+    /** 生成 controller 回调：源图/参数/落库/导航仍归 VM。 */
+    private inner class GenerationHost : GenerationController.Host {
+        override val imagePixels: IntArray?
+            get() = this@AppViewModel.imagePixels
+        override val imageWidth: Int
+            get() = this@AppViewModel.imageW
+        override val imageHeight: Int
+            get() = this@AppViewModel.imageH
+        override val selectedPalette: BeadPalette?
+            get() = this@AppViewModel.selectedPalette
+        override val pixelArtGrid: Pair<Int, Int>?
+            get() = this@AppViewModel.pixelArtGrid
+
+        override fun options(): GeneratorOptions = currentOptions()
+
+        override suspend fun prepareSubjectMask(): SubjectMask? = prepareAiMask()
+
+        override fun clearProjectPages() {
+            projectPages = emptyList()
+        }
+
+        override suspend fun saveAfterGenerate(result: PatternResult) {
+            this@AppViewModel.saveAfterGenerate(result)
+        }
+
+        override fun applyTunedParams(filterLevel: FilterLevel, maxColors: Int?) {
+            this@AppViewModel.filterLevel = filterLevel
+            if (maxColors != null) {
+                limitColors = true
+                this@AppViewModel.maxColors = maxColors
+            } else {
+                limitColors = false
+            }
+        }
+
+        override fun navigateToPreview() {
+            previewReturn = Screen.PARAMS
+            previewReturnTab = null
+            screen = Screen.PREVIEW
+        }
+
+        override fun reportNotReady(message: String) {
+            lastError = message
+        }
+    }
 
     /** 裁剪 controller 回调：源图、色卡、网格参数和导航仍归 VM。 */
     private inner class CropHost : CropController.Host {
