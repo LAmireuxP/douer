@@ -3,8 +3,7 @@ package com.pindou.app.ui.open
 import com.pindou.app.core.data.GridCodec
 import com.pindou.app.core.data.ProjectGridRepair
 import com.pindou.app.core.studio.StudioEngine
-import com.pindou.app.core.studio.StudioFrame
-import com.pindou.app.core.studio.StudioLayer
+import com.pindou.app.core.studio.StudioPages
 
 /**
  * 打开项目时的纯决策：格子解码 → 尺寸修复 → 分页 → sidecar 复用/回退。
@@ -72,21 +71,7 @@ object ProjectOpenPlan {
 
         val studio = loadedStudio?.takeIf {
             it.width == gridWidth && it.height == gridHeight
-        } ?: StudioEngine(
-            gridWidth,
-            gridHeight,
-            pageCells.mapIndexed { index, page ->
-                StudioFrame(
-                    mutableListOf(
-                        StudioLayer(
-                            if (pageCells.size == 1) "图层 1" else "第 ${index + 1} 页",
-                            page.copyOf(),
-                        ),
-                    ),
-                )
-            },
-            paletteArgb = paletteArgb,
-        )
+        } ?: StudioPages.engineFrom(gridWidth, gridHeight, pageCells, paletteArgb)
 
         return Result.Ready(
             width = gridWidth,

@@ -15,6 +15,7 @@ import androidx.lifecycle.viewModelScope
 import com.pindou.app.core.palette.BeadPalette
 import com.pindou.app.core.palette.PaletteAssets
 import com.pindou.app.core.build.ConstructionState
+import com.pindou.app.core.build.ConstructionResumePlan
 import com.pindou.app.core.data.GridCodec
 import com.pindou.app.core.data.ProjectSummary
 import com.pindou.app.core.data.ProjectRepository
@@ -41,8 +42,7 @@ import com.pindou.app.core.pattern.PixelImportPipeline
 import com.pindou.app.core.pattern.SubjectMask
 import com.pindou.app.core.studio.StudioCodec
 import com.pindou.app.core.studio.StudioEngine
-import com.pindou.app.core.studio.StudioFrame
-import com.pindou.app.core.studio.StudioLayer
+import com.pindou.app.core.studio.StudioPages
 import com.pindou.app.core.settings.GlassAppearance
 import com.pindou.app.ui.theme.AppThemes
 import com.pindou.app.ui.pixel.PixelCalibrationController
@@ -1182,20 +1182,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }
-            val target = loaded ?: StudioEngine(
-                width,
-                height,
-                pages.mapIndexed { index, cells ->
-                    StudioFrame(
-                        mutableListOf(
-                            StudioLayer(
-                                if (pages.size == 1) "图层 1" else "第 ${index + 1} 页",
-                                cells.copyOf(),
-                            ),
-                        ),
-                    )
-                },
-                paletteArgb = paletteArgbs(palette),
+            // 与项目库打开共用同一条「页 → Studio 工程」映射
+            val target = loaded ?: StudioPages.engineFrom(
+                width, height, pages, paletteArgbs(palette),
             )
 
             if (id != null) {
@@ -1507,46 +1496,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val pages = currentPages().map { it.cells }.ifEmpty { listOf(result.cells) }
             val pageCount = pages.size.coerceAtLeast(1)
             val pageSize = result.width * result.height
-            val expectedSize = pageSize * pageCount
             val entity = currentProjectId?.let { repository.get(it) }
-            // 编辑器改过尺寸后进度数组长度会失配：失配即作废旧进度、游标归零
-            val stored = entity?.doneCells
-            val validStored = stored != null && stored.size == expectedSize
-            val done = when {
-                validStored ->
-                    BooleanArray(expectedSize) { stored[it] != 0.toByte() }
-                // 旧多页项目可能只存了前 N 页：保留已有页，其余页从空白开始
-                stored != null && pageSize > 0 &&
-                    stored.size % pageSize == 0 && stored.size <= expectedSize ->
-                    BooleanArray(expectedSize).also { out ->
-                        for (i in stored.indices) out[i] = stored[i] != 0.toByte()
-                    }
-                else -> BooleanArray(expectedSize)
-            }
+            // 编辑器改过尺寸后进度数组长度会失配：三条恢复分支见 ConstructionResumePlan
+            val resume = ConstructionResumePlan.plan(
+                stored = entity?.doneCells,
+                pageSize = pageSize,
+                pageCount = pageCount,
+                orientationCode = entity?.buildOrientation ?: 0,
+                storedCursor = entity?.buildCursor,
+                paletteSize = result.palette.colors.size,
+                width = result.width,
+                height = result.height,
+            )
             construction = ConstructionState(
                 width = result.width,
                 height = result.height,
-                done = done,
+                done = resume.done,
                 pages = pageCount,
-                // 0=按行 1=按列 2=按色号 3=按底板；cursor 语义随模式变化
-                orientation = when (entity?.buildOrientation ?: 0) {
-                    1 -> ConstructionState.Orientation.COLUMN
-                    2 -> ConstructionState.Orientation.COLOR
-                    3 -> ConstructionState.Orientation.BOARD
-                    else -> ConstructionState.Orientation.ROW
-                },
-                cursor = if (validStored) {
-                    val upper = when (entity?.buildOrientation ?: 0) {
-                        2 -> (result.palette.colors.size - 1).coerceAtLeast(0)
-                        3 -> ((result.width + 28) / 29 * ((result.height + 28) / 29) - 1)
-                            .coerceAtLeast(0)
-                        1 -> (result.width - 1).coerceAtLeast(0)
-                        else -> (result.height - 1).coerceAtLeast(0)
-                    }
-                    (entity?.buildCursor ?: 0).coerceIn(0, upper)
-                } else {
-                    0
-                },
+                orientation = resume.orientation,
+                cursor = resume.cursor,
             )
             screen = Screen.CONSTRUCTION
         }
