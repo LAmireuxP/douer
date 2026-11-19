@@ -9,7 +9,6 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.core.graphics.createBitmap
 import androidx.core.graphics.scale
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -51,6 +50,7 @@ import com.pindou.app.core.settings.GlassAppearance
 import com.pindou.app.ui.theme.AppThemes
 import com.pindou.app.ui.pixel.PixelCalibrationController
 import com.pindou.app.ui.library.ProjectLibraryController
+import com.pindou.app.ui.crop.CropController
 import com.pindou.app.ui.studio.StudioPersistence
 import com.pindou.app.ui.studio.StudioSession
 import com.pindou.app.ui.chart.ChartCalibrationController
@@ -116,47 +116,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val chartRefineRunning: Boolean get() = chartController.refineRunning
     val chartDetected: Boolean get() = chartController.detected
 
-    /** 裁剪框（工作图像素坐标系），null = 不在裁剪流程中 */
-    var cropRect by mutableStateOf<CropRect?>(null)
-        private set
+    /** 裁剪页子域控制器；只读转发属性保留 `vm.crop*` 旧 API。 */
+    private val cropController = CropController(viewModelScope, CropHost())
+
+    val cropRect: CropRect? get() = cropController.cropRect
+    val cropOriginalPreset: Boolean get() = cropController.cropOriginalPreset
+    val cropPreviewEnabled: Boolean get() = cropController.cropPreviewEnabled
+    val cropPreview: CropGridPreview? get() = cropController.cropPreview
+    val cropPreviewRunning: Boolean get() = cropController.cropPreviewRunning
+    val cropAspectMode: CropAspectMode get() = cropController.cropAspectMode
+
     private var cropReturn = Screen.HOME
-
-    /**
-     * 用户是否显式点过「原图」预设。
-     *
-     * 不能再用「选区是否等于整图」来反推选中态：导入时默认就是整图，
-     * 那样「原图」会一直高亮，而用户实际上想要的是自由裁剪。
-     */
-    var cropOriginalPreset by mutableStateOf(false)
-        private set
-
-    /** 几何变换执行中标志（防止连点导致的状态竞争） */
-    private var transformRunning = false
-
-    // ---------- 裁剪页实时网格预览 ----------
-
-    /** 裁剪页是否把每格画成最终色号（关掉只剩框线与辅助线） */
-    var cropPreviewEnabled by mutableStateOf(true)
-        private set
-
-    var cropPreview by mutableStateOf<CropGridPreview?>(null)
-        private set
-
-    /** 正在算预览（防抖结束 + 管线一次） */
-    var cropPreviewRunning by mutableStateOf(false)
-        private set
-
-    private var cropPreviewJob: Job? = null
-    private var cropPreviewToken = 0
     private var generationJob: Job? = null
     private var autoTuneJob: Job? = null
-
-    /**
-     * 用户在裁剪页显式定过网格：裁剪完成后不再被「像素画原画网格」覆盖。
-     * 否则 56×50 的图改成 78×70 再裁，confirmCrop 里检测一次又跳回原画，
-     * 用户会觉得定的尺寸没生效。
-     */
-    private var cropGridUserSet = false
 
     /** 参数页返回目标：true = 从裁剪页确认过来，返回时回裁剪页 */
     private var paramsFromCrop = false
@@ -176,10 +148,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** 预览页是否还允许回参数页调整（只有从参数页来的生成结果才有源图） */
     val canAdjustParams: Boolean
         get() = previewReturn == Screen.PARAMS && imagePixels != null && textSource == null
-
-    /** 当前裁剪选区模式；默认自由 */
-    var cropAspectMode by mutableStateOf(CropAspectMode.FREE)
-        private set
 
     /** 本次编辑是否由项目库打开（决定编辑完成后预览返回哪里） */
     private var editorFromLibrary = false
@@ -537,11 +505,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 imagePixels = pixels
                 imageW = size[0]
                 imageH = size[1]
-                cropAspectMode = CropAspectMode.FREE
-                cropOriginalPreset = false
                 // 导入时默认保留整张图。自由模式下网格会跟随选区比例，
                 // 不再用中心方框去猜主体，也不会出现「方框配长格」的拉伸。
-                cropRect = if (art != null) {
+                val initialRect = if (art != null) {
                     val l = art.ox.toFloat().coerceIn(0f, size[0] - 1f)
                     val t = art.oy.toFloat().coerceIn(0f, size[1] - 1f)
                     val r = (art.ox + art.artW * art.blockW).toFloat().coerceIn(l + 1f, size[0].toFloat())
@@ -550,27 +516,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     CropRect.full(size[0], size[1])
                 }
-                if (art != null) {
-                    gridW = art.artW.coerceIn(5, 200)
-                    gridH = art.artH.coerceIn(5, 200)
-                }
-                cropGridUserSet = false
-                cropPreview = null
+                cropController.prepareForImport(
+                    rect = initialRect,
+                    artGrid = art?.let { it.artW to it.artH },
+                )
                 paramsFromCrop = false
-                adaptiveAnchor = 0
-                adaptiveScale = 1f
                 importError = null
                 genState = GenState.Idle
-                // 无论照片还是像素画，都先让用户确认画布范围。
-                // 像素画只是不显示网格着色预览：它的网格在下一步专门校准，
-                // 裁剪页再叠一层格线只会让用户分不清该调哪一层。
-                syncCropGridToRect(cropRect!!)
                 if (pixelMode) {
                     // 像素画流程不再经过「原图/自由/正方形」预选页：
                     // 导入后直接进校准，整张图就是初始网格范围。
-                    cropPreviewJob?.cancel()
-                    cropPreview = null
-                    cropPreviewRunning = false
                     pixelController.initialize(pixels, size[0], size[1])
                     withContext(Dispatchers.Main) {
                         screen = Screen.PIXEL_CALIBRATE
@@ -578,7 +533,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     cropReturn = Screen.HOME
                     screen = Screen.CROP
-                    scheduleCropPreview()
+                    cropController.schedulePreview()
                 }
             }.onFailure { e ->
                 importError = e.message ?: "导入失败"
@@ -586,364 +541,38 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * 内置示例图：assets 里的样图落到缓存文件后走同一条导入链路。
-     *
-     * 不复制导入逻辑——示例图和用户照片必须走同一个解码/检测/裁剪入口，
-     * 否则示例能跑通、真机导入出问题的情况会漏测。
-     */
     // ---------- 裁剪与几何变换 ----------
 
-    private fun launchTransform(block: suspend () -> Unit) {
-        if (transformRunning) return
-        transformRunning = true
-        viewModelScope.launch(Dispatchers.Default) {
-            try {
-                block()
-            } finally {
-                transformRunning = false
-            }
-        }
-    }
-
-    private fun rebuildPreview() {
-        val p = imagePixels ?: return
-        if (imageW <= 0 || imageH <= 0) return
-        imagePreview = Bitmap.createBitmap(p, imageW, imageH, Bitmap.Config.ARGB_8888)
-    }
-
-    /**
-     * 几何变换后重新识别像素画网格。
-     *
-     * 裁剪/旋转会换掉像素数组（检测器的缓存按数组实例失效），画像素网格
-     * 也可能变（裁掉一圈后 56×50 会变成 54×48）。识别到就把网格同步成
-     * 原画尺寸，用户不必自己数格子。
-     */
-    private fun refreshPixelArt(pixels: IntArray, w: Int, h: Int, forceGrid: Boolean = true) {
-        // 用户在像素校准页确认过的网格优先：再次自动检测会把
-        // 他们手动修过的列/行/偏移覆盖掉，这是之前"校准等于没校准"的根因。
-        if (pixelController.confirmed) return
-        val art = if (pixelArtMode) {
-            PixelArtDetector.detectForced(pixels, w, h)
-        } else {
-            PixelArtDetector.detect(pixels, w, h)
-        }
-        pixelArtGrid = art?.let { it.artW to it.artH }
-        if (art != null) {
-            filterLevel = FilterLevel.NONE
-            // forceGrid=false：用户在裁剪页已经定过网格，尊重他们的选择
-            if (forceGrid) {
-                gridW = art.artW.coerceIn(5, 200)
-                gridH = art.artH.coerceIn(5, 200)
-            }
-            adaptiveAnchor = 0
-            adaptiveScale = 1f
-        } else if (pixelArtMode) {
-            filterLevel = FilterLevel.NONE
-        }
-    }
-
-    /** 进入裁剪页（参数页「重新裁剪」入口；导入后自动进入，不经此函数） */
     fun openCrop() {
         if (imagePixels == null || imageW <= 0 || imageH <= 0) return
-        cropAspectMode = CropAspectMode.FREE
-        cropOriginalPreset = false
-        // 重新裁剪从整张图开始，用户再按主体框选；默认不再替用户切方图
-        cropRect = CropRect.full(imageW, imageH)
-        cropGridUserSet = false
-        syncCropGridToRect(cropRect!!)
         cropReturn = Screen.PARAMS
         screen = Screen.CROP
-        scheduleCropPreview()
+        cropController.prepareForOpen()
     }
 
-    fun updateCropRect(rect: CropRect) {
-        cropRect = rect
-        // 手动拖过选框就不再算「原图」预设
-        cropOriginalPreset = false
-        if (cropAspectMode == CropAspectMode.FREE) syncCropGridToRect(rect)
-        scheduleCropPreview()
-    }
+    fun updateCropRect(rect: CropRect) = cropController.updateCropRect(rect)
 
-    /** 显式选择「原图」：整图入框，并记住这个高亮状态 */
-    fun selectCropOriginal() {
-        if (imageW <= 0 || imageH <= 0) return
-        cropAspectMode = CropAspectMode.FREE
-        cropRect = CropRect.full(imageW, imageH)
-        cropOriginalPreset = true
-        syncCropGridToRect(cropRect!!)
-        scheduleCropPreview()
-    }
+    fun selectCropOriginal() = cropController.selectCropOriginal()
 
-    /** 切换自由 / 正方形；正方形立刻把选区和网格都收成 1:1 */
-    fun changeCropAspectMode(mode: CropAspectMode) {
-        if (cropAspectMode == mode) return
-        cropOriginalPreset = false
-        cropAspectMode = mode
-        if (imageW <= 0 || imageH <= 0) return
-        when (mode) {
-            CropAspectMode.SQUARE -> {
-                cropRect = cropRect
-                    ?.let { ImageTransforms.squareAround(it, imageW.toFloat(), imageH.toFloat()) }
-                    ?: ImageTransforms.centerSquare(imageW, imageH)
-                val side = max(gridW, gridH)
-                gridW = side
-                gridH = side
-            }
-            CropAspectMode.FREE -> {
-                cropRect?.let { syncCropGridToRect(it) }
-            }
-        }
-        scheduleCropPreview()
-    }
+    fun changeCropAspectMode(mode: CropAspectMode) = cropController.changeCropAspectMode(mode)
 
-    /**
-     * 自由裁剪的根修复：网格宽高比永远跟着选区走。
-     *
-     * 降采样按宽、高独立映射，选区 4:3、网格 1:1 就会把主体压扁。
-     * 这里锚定长边重算另一边，选区怎么拖都不会拉伸；正方形模式
-     * 由 [setCropAspectMode] 独立锁死 1:1。
-     */
-    private fun syncCropGridToRect(rect: CropRect) {
-        if (cropAspectMode != CropAspectMode.FREE) return
-        if (rect.width <= 0f || rect.height <= 0f) return
-        val anchor = max(gridW, gridH)
-        val (w, h) = ImageTransforms.gridSizeForAspect(rect.width / rect.height, anchor)
-        gridW = w
-        gridH = h
-    }
+    fun toggleCropPreview() = cropController.toggleCropPreview()
 
-    // ---------- 裁剪页：先定网格，再看每格颜色 ----------
+    fun setCropGridWidth(w: Int) = cropController.setCropGridWidth(w)
 
-    fun toggleCropPreview() {
-        cropPreviewEnabled = !cropPreviewEnabled
-        if (cropPreviewEnabled) {
-            scheduleCropPreview()
-        } else {
-            cropPreviewJob?.cancel()
-            cropPreview = null
-            cropPreviewRunning = false
-        }
-    }
+    fun setCropGridHeight(h: Int) = cropController.setCropGridHeight(h)
 
-    fun setCropGridWidth(w: Int) {
-        cropGridUserSet = true
-        val cw = w.coerceIn(5, 200)
-        if (cropAspectMode == CropAspectMode.SQUARE) {
-            gridW = cw
-            gridH = cw
-        } else {
-            val rect = cropRect
-            val aspect = if (rect != null && rect.height > 0f) rect.width / rect.height else 1f
-            gridW = cw
-            gridH = (cw / aspect).roundToInt().coerceIn(5, 200)
-            // 短边被下限/上限钳制时反推宽，保持比例精确，宁可格数差一格也不拉伸
-            gridW = (gridH * aspect).roundToInt().coerceIn(5, 200)
-        }
-        adaptiveAnchor = 0
-        adaptiveScale = 1f
-        scheduleCropPreview()
-    }
+    fun setCropGridPreset(w: Int, h: Int) = cropController.setCropGridPreset(w, h)
 
-    fun setCropGridHeight(h: Int) {
-        cropGridUserSet = true
-        val ch = h.coerceIn(5, 200)
-        if (cropAspectMode == CropAspectMode.SQUARE) {
-            gridW = ch
-            gridH = ch
-        } else {
-            val rect = cropRect
-            val aspect = if (rect != null && rect.height > 0f) rect.width / rect.height else 1f
-            gridH = ch
-            gridW = (ch * aspect).roundToInt().coerceIn(5, 200)
-            gridH = (gridW / aspect).roundToInt().coerceIn(5, 200)
-        }
-        adaptiveAnchor = 0
-        adaptiveScale = 1f
-        scheduleCropPreview()
-    }
+    fun applyArtGridAtCrop() = cropController.applyArtGridAtCrop()
 
-    fun setCropGridPreset(w: Int, h: Int) {
-        cropGridUserSet = true
-        setGridSize(w, h)
-        scheduleCropPreview()
-    }
+    fun rotateImage(clockwise: Boolean) = cropController.rotateImage(clockwise)
 
-    fun applyArtGridAtCrop() {
-        cropGridUserSet = true
-        applyArtGrid()
-        cropRect?.let { syncCropGridToRect(it) }
-        scheduleCropPreview()
-    }
+    fun mirrorImage(horizontal: Boolean) = cropController.mirrorImage(horizontal)
 
-    /**
-     * 请求一次裁剪网格预览。
-     *
-     * 拖动时 updateCropRect 每帧都会进来，这里用 160ms 防抖 + 递增 token：
-     * 只有最后一次请求的结果会被写回状态，中间那些算完就丢。管线本身是纯
-     * Kotlin（无 Bitmap 锁），可以放心在 Default 线程跑。
-     */
-    private fun scheduleCropPreview() {
-        if (screen != Screen.CROP || !cropPreviewEnabled) return
-        val pixels = imagePixels ?: return
-        val rect = cropRect ?: return
-        val token = ++cropPreviewToken
-        cropPreviewJob?.cancel()
-        cropPreviewJob = viewModelScope.launch(Dispatchers.Default) {
-            try {
-                delay(160)
-                if (token != cropPreviewToken) return@launch
-                // 色卡是异步加载的：导入后立刻排预览时 selectedPalette 可能还是 null，
-                // 这里等一下加载完成再算，否则预览永远不出现（裁剪页只剩空网格）。
-                val loaded = ensurePalettes()
-                val palette = selectedPalette
-                    ?: loaded.firstOrNull { it.brand == "MARD" }
-                    ?: loaded.firstOrNull()
-                    ?: return@launch
-                cropPreviewRunning = true
-                val sub = ImageTransforms.crop(pixels, imageW, imageH, rect)
-                // 与最终生成完全同一套参数：预览色号 = 成品色号，
-                // 不会出现"裁的时候好看、生成完变样"。
-                val res = PatternGenerator.generate(
-                    sub.pixels, sub.width, sub.height, currentOptions(), palette,
-                )
-                if (token != cropPreviewToken) return@launch
-                val argb = IntArray(res.cells.size)
-                val distinct = HashSet<Int>()
-                for (i in argb.indices) {
-                    val idx = res.cells[i]
-                    if (idx >= 0 && idx < res.palette.colors.size) {
-                        argb[i] = res.palette.colors[idx].argb
-                        distinct.add(idx)
-                    } else {
-                        // 背景移除掉的格子保持透明，底图透出来才知道哪块被判成背景
-                        argb[i] = 0
-                    }
-                }
-                val bmp = createBitmap(res.width, res.height)
-                bmp.setPixels(argb, 0, res.width, 0, 0, res.width, res.height)
-                cropPreview = CropGridPreview(
-                    rect = rect,
-                    gridW = res.width,
-                    gridH = res.height,
-                    image = bmp,
-                    colorCount = distinct.size,
-                    elapsedMs = res.elapsedMs,
-                )
-            } catch (e: Exception) {
-                // 预览失败不打断裁剪；正式生成会重新报错。留日志便于定位静默失败。
-                android.util.Log.w("PindouCrop", "裁剪预览生成失败", e)
-            } finally {
-                if (token == cropPreviewToken) cropPreviewRunning = false
-            }
-        }
-    }
+    fun resetImageTransforms() = cropController.resetImageTransforms()
 
-    /** 旋转 90°：即时作用于工作图，裁剪框随图像同步变换 */
-    fun rotateImage(clockwise: Boolean) {
-        val pixels = imagePixels ?: return
-        val w = imageW
-        val h = imageH
-        val rect = cropRect
-        launchTransform {
-            val t = ImageTransforms.rotate90(pixels, w, h, clockwise)
-            imagePixels = t.pixels
-            imageW = t.width
-            imageH = t.height
-            if (rect != null) cropRect = ImageTransforms.rotateRect(rect, w, h, clockwise)
-            rebuildPreview()
-            refreshPixelArt(t.pixels, t.width, t.height)
-            scheduleCropPreview()
-        }
-    }
-
-    /** 镜像：即时作用于工作图，裁剪框随图像同步变换 */
-    fun mirrorImage(horizontal: Boolean) {
-        val pixels = imagePixels ?: return
-        val w = imageW
-        val h = imageH
-        val rect = cropRect
-        launchTransform {
-            val t = ImageTransforms.mirror(pixels, w, h, horizontal)
-            imagePixels = t.pixels
-            imageW = t.width
-            imageH = t.height
-            if (rect != null) cropRect = ImageTransforms.mirrorRect(rect, w, h, horizontal)
-            rebuildPreview()
-            refreshPixelArt(t.pixels, t.width, t.height)
-            scheduleCropPreview()
-        }
-    }
-
-    /** 重置全部几何变换，恢复刚导入时的原图 */
-    fun resetImageTransforms() {
-        val pixels = originalPixels ?: return
-        val w = originalW
-        val h = originalH
-        launchTransform {
-            imagePixels = pixels
-            imageW = w
-            imageH = h
-            cropRect = CropRect.full(w, h)
-            rebuildPreview()
-            refreshPixelArt(pixels, w, h)
-            scheduleCropPreview()
-        }
-    }
-
-    /**
-     * 像素模式：用当前裁剪框（或整图）初始化校准网格。
-     *
-     * 自动检测必须在裁剪后的图上重跑：整图里的背景留白会把单格尺寸
-     * 算大，进校准页时线全都压在色块中间。检测失败就用覆盖整图的
-     * 32×32 兜底，至少让用户有东西可拖。
-     *
-     * 智能对齐默认开着，所以这里直接在进页面之前吸附一次，并把预览
-     * 算完再切屏——用户第一眼看到的就是最终网格和最终图纸。
-     */
-    /** 确认裁剪：像素画进校准页，照片进参数页 */
-    fun confirmCrop() {
-        val pixels = imagePixels ?: return
-        val rect = cropRect ?: return
-        val w = imageW
-        val h = imageH
-        // 最后一帧再同步一次：拖动中和确认之间不留下比例差
-        syncCropGridToRect(rect)
-        val isFull = rect.left <= 0f && rect.top <= 0f &&
-            rect.right >= w.toFloat() && rect.bottom >= h.toFloat()
-        if (isFull) {
-            paramsFromCrop = true
-            screen = Screen.PARAMS
-            return
-        }
-        launchTransform {
-            // 裁切会改变画像素网格的起点和列数，旧校准直接失效；
-            // 留着它会让下一次生成按错误块长切块，整张图错位。
-            if (pixelController.confirmed) {
-                pixelController.clearConfirmed()
-                pixelController.resetForNewImage()
-            }
-            val t = ImageTransforms.crop(pixels, w, h, rect)
-            imagePixels = t.pixels
-            imageW = t.width
-            imageH = t.height
-            cropRect = CropRect.full(t.width, t.height)
-            rebuildPreview()
-            // 裁剪页定过网格就保留，没定过才跟随新的画像素尺寸
-            refreshPixelArt(
-                t.pixels, t.width, t.height,
-                forceGrid = !cropGridUserSet && !pixelController.confirmed,
-            )
-            cropGridUserSet = false
-            cropPreviewJob?.cancel()
-            cropPreview = null
-            cropPreviewRunning = false
-            withContext(Dispatchers.Main) {
-                paramsFromCrop = true
-                screen = Screen.PARAMS
-            }
-        }
-    }
+    fun confirmCrop() = cropController.confirmCrop()
 
     // ---------- 像素画校准页 ----------
 
@@ -1019,7 +648,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectPalette(palette: BeadPalette) {
         selectedPalette = palette
-        scheduleCropPreview()
+        cropController.schedulePreview()
     }
 
     /** 自适应网格：长边沿用当前设定的长边，短边按图片比例计算，避免生成拉伸 */
@@ -1804,7 +1433,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 originalPixels = pixels
                 originalW = bitmap.width
                 originalH = bitmap.height
-                cropRect = com.pindou.app.core.image.CropRect.full(bitmap.width, bitmap.height)
+                cropController.resetCropToFull(bitmap.width, bitmap.height)
                 imagePreview = bitmap // 保留位图供预览，不 recycle
                 val result = PatternGenerator.generate(
                     pixels, bitmap.width, bitmap.height,
@@ -1979,17 +1608,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         originalPixels = null
         originalW = 0
         originalH = 0
-        cropRect = null
-        cropOriginalPreset = false
+        cropController.resetForNewProject()
         paramsFromCrop = false
-        adaptiveAnchor = 0
-        adaptiveScale = 1f
         textSource = null
         pixelArtMode = false
         pixelArtGrid = null
         previewReturn = Screen.HOME
         previewReturnTab = null
-        cropAspectMode = CropAspectMode.FREE
         editorTool = EditorTool.NONE
         editorEraseRegion = false
         editorFromLibrary = false
@@ -2549,6 +2174,83 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun paletteFor(brand: String, beadSizeTag: String): BeadPalette? =
         PaletteAssets.pick(palettes, brand, beadSizeTag)
 
+    /** 裁剪 controller 回调：源图、色卡、网格参数和导航仍归 VM。 */
+    private inner class CropHost : CropController.Host {
+        override val screen: Screen
+            get() = this@AppViewModel.screen
+        override val imagePixels: IntArray?
+            get() = this@AppViewModel.imagePixels
+        override val imageWidth: Int
+            get() = this@AppViewModel.imageW
+        override val imageHeight: Int
+            get() = this@AppViewModel.imageH
+        override val originalPixels: IntArray?
+            get() = this@AppViewModel.originalPixels
+        override val originalWidth: Int
+            get() = this@AppViewModel.originalW
+        override val originalHeight: Int
+            get() = this@AppViewModel.originalH
+        override val gridWidth: Int
+            get() = this@AppViewModel.gridW
+        override val gridHeight: Int
+            get() = this@AppViewModel.gridH
+        override val pixelArtGrid: Pair<Int, Int>?
+            get() = this@AppViewModel.pixelArtGrid
+        override val pixelArtMode: Boolean
+            get() = this@AppViewModel.pixelArtMode
+        override val pixelCalibrationConfirmed: Boolean
+            get() = pixelController.confirmed
+        override val selectedPalette: BeadPalette?
+            get() = this@AppViewModel.selectedPalette
+
+        override suspend fun ensurePalette(): BeadPalette? {
+            ensurePalettes()
+            return selectedPalette
+                ?: palettes.firstOrNull { it.brand == "MARD" }
+                ?: palettes.firstOrNull()
+        }
+
+        override fun generatorOptions(): GeneratorOptions = currentOptions()
+
+        override fun setWorkingImage(pixels: IntArray, width: Int, height: Int) {
+            this@AppViewModel.imagePixels = pixels
+            this@AppViewModel.imageW = width
+            this@AppViewModel.imageH = height
+        }
+
+        override fun setPreviewBitmap(bitmap: Bitmap?) {
+            imagePreview = bitmap
+        }
+
+        override fun setGridSize(width: Int, height: Int) {
+            gridW = width.coerceIn(5, 200)
+            gridH = height.coerceIn(5, 200)
+        }
+
+        override fun setPixelArtGrid(grid: Pair<Int, Int>?) {
+            this@AppViewModel.pixelArtGrid = grid
+        }
+
+        override fun setFilterLevelNone() {
+            filterLevel = FilterLevel.NONE
+        }
+
+        override fun resetAdaptive() {
+            adaptiveAnchor = 0
+            adaptiveScale = 1f
+        }
+
+        override fun clearPixelCalibration() {
+            pixelController.clearConfirmed()
+            pixelController.resetForNewImage()
+        }
+
+        override fun navigateToParams() {
+            paramsFromCrop = true
+            this@AppViewModel.screen = Screen.PARAMS
+        }
+    }
+
     /** 项目库 controller 回调：当前项目 id 与提示仍归 VM。 */
     private inner class LibraryHost : ProjectLibraryController.Host {
         override val currentProjectId: Long?
@@ -2634,7 +2336,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 this@AppViewModel.imageW = croppedWidth
                 this@AppViewModel.imageH = croppedHeight
                 this@AppViewModel.imagePreview = preview
-                this@AppViewModel.cropRect = CropRect.full(croppedWidth, croppedHeight)
                 // 裁完图后网格原点就是 (0,0)，保留旧 offset 会让下一次
                 // 复查/重算把整张网格推出画面。
                 pixelController.clearAfterConfirm(grid)
@@ -2643,8 +2344,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 this@AppViewModel.gridW = grid.cols
                 this@AppViewModel.gridH = grid.rows
                 this@AppViewModel.filterLevel = FilterLevel.NONE
-                this@AppViewModel.cropGridUserSet = true
-                this@AppViewModel.cropPreview = null
+                cropController.onPixelConfirmed(croppedWidth, croppedHeight)
                 this@AppViewModel.paramsFromCrop = false
                 this@AppViewModel.adaptiveAnchor = 0
                 this@AppViewModel.adaptiveScale = 1f
