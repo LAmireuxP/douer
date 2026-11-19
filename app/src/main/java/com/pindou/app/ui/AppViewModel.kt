@@ -16,7 +16,6 @@ import com.pindou.app.core.palette.BeadPalette
 import com.pindou.app.core.palette.PaletteAssets
 import com.pindou.app.core.build.ConstructionState
 import com.pindou.app.core.data.GridCodec
-import com.pindou.app.core.data.ProjectGridRepair
 import com.pindou.app.core.data.ProjectSummary
 import com.pindou.app.core.data.ProjectRepository
 import com.pindou.app.core.data.SettingsStore
@@ -51,6 +50,7 @@ import com.pindou.app.ui.library.ProjectLibraryController
 import com.pindou.app.ui.crop.CropController
 import com.pindou.app.ui.editor.EditorController
 import com.pindou.app.ui.generate.GenerationController
+import com.pindou.app.ui.open.ProjectOpenPlan
 import com.pindou.app.ui.studio.StudioPersistence
 import com.pindou.app.ui.studio.StudioSession
 import com.pindou.app.ui.chart.ChartCalibrationController
@@ -1297,32 +1297,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     lastError = "打开失败：未找到色卡「${entity.paletteBrand}」，当前已载入 ${palettes.size} 套"
                     return@launch
                 }
-                val cells = GridCodec.decodeCells(entity.cells)
-                val pageCount = entity.pages.coerceAtLeast(1)
-                var gridWidth = entity.width
-                var gridHeight = entity.height
-                var pageLen = gridWidth * gridHeight
-                if (cells.size != pageLen * pageCount) {
-                    val repaired = ProjectGridRepair.infer(
-                        entity.width, entity.height, cells.size, pageCount,
-                    )
-                    if (repaired == null) {
-                        lastError =
-                            "打开失败：数据尺寸不符（${cells.size} vs ${pageLen * pageCount}）"
-                        return@launch
-                    }
-                    gridWidth = repaired.width
-                    gridHeight = repaired.height
-                    pageLen = gridWidth * gridHeight
-                    withContext(Dispatchers.IO) {
-                        repository.repairSize(entity.id, gridWidth, gridHeight)
-                    }
-                    toast = "已修复旧项目尺寸为 ${gridWidth}×${gridHeight}"
-                }
-                val pages = chunkInts(cells, pageLen)
-                // 项目库统一进画像素编辑器（新编辑页面）：
-                // 有 sidecar 就还原图层/帧，没有就按页建一层。
-                // 旧单层编辑器只保留在创建流程内部使用。
+                // 项目库统一进画像素编辑器：有 sidecar 就还原图层/帧，
+                // 没有或尺寸不符时由 ProjectOpenPlan 按页建一层。
                 val studioPath = entity.studioPath
                 val loaded = if (studioPath != null) {
                     withContext(Dispatchers.IO) {
@@ -1331,25 +1307,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     null
                 }
-                val studioEngine = loaded?.takeIf {
-                    it.width == gridWidth && it.height == gridHeight
-                } ?: StudioEngine(
-                    gridWidth,
-                    gridHeight,
-                    pages.mapIndexed { index, page ->
-                        StudioFrame(
-                            mutableListOf(
-                                StudioLayer(
-                                    if (pages.size == 1) "图层 1" else "第 ${index + 1} 页",
-                                    page.copyOf(),
-                                ),
-                            ),
-                        )
-                    },
+                val opened = ProjectOpenPlan.plan(
+                    width = entity.width,
+                    height = entity.height,
+                    pageCount = entity.pages,
+                    encodedCells = entity.cells,
+                    loadedStudio = loaded,
                     paletteArgb = paletteArgbs(palette),
                 )
+                if (opened is ProjectOpenPlan.Result.Error) {
+                    lastError = opened.message
+                    return@launch
+                }
+                opened as ProjectOpenPlan.Result.Ready
+                if (opened.repaired) {
+                    withContext(Dispatchers.IO) {
+                        repository.repairSize(entity.id, opened.width, opened.height)
+                    }
+                    toast = "已修复旧项目尺寸为 ${opened.width}×${opened.height}"
+                }
                 studio = StudioSession(
-                    studioEngine, palette, entity.id, entity.name,
+                    opened.studio, palette, entity.id, entity.name,
                     initialToolX = settings.studioToolX,
                     initialToolY = settings.studioToolY,
                     initialColorX = settings.studioColorX,
@@ -1360,9 +1338,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 studioProjectId = entity.id
                 currentProjectId = entity.id
                 projectName = entity.name
-                projectPages = pages
+                projectPages = opened.pages
                 genState = GenState.Done(
-                    PatternResult(gridWidth, gridHeight, pages.first(), palette, 0),
+                    PatternResult(opened.width, opened.height, opened.pages.first(), palette, 0),
                 )
                 editor = null
                 selectedPalette = palette
