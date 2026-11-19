@@ -56,7 +56,6 @@ import com.pindou.app.ui.studio.StudioSession
 import com.pindou.app.ui.chart.ChartCalibrationController
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
@@ -127,8 +126,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val cropAspectMode: CropAspectMode get() = cropController.cropAspectMode
 
     private var cropReturn = Screen.HOME
-    private var textGenerationJob: Job? = null
-
     /** 参数页返回目标：true = 从裁剪页确认过来，返回时回裁剪页 */
     private var paramsFromCrop = false
 
@@ -455,8 +452,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 换图/离开当前生成流程时，先把旧的后台生成停掉，避免旧结果落库。 */
     private fun cancelGeneration() {
-        textGenerationJob?.cancel()
-        textGenerationJob = null
         generationController.cancel()
     }
 
@@ -749,8 +744,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun generate() {
-        textGenerationJob?.cancel()
-        textGenerationJob = null
         generationController.generate()
     }
 
@@ -772,8 +765,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     fun autoTune() {
-        textGenerationJob?.cancel()
-        textGenerationJob = null
         generationController.autoTune()
     }
 
@@ -1273,76 +1264,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 文字拼豆：文字栅格化后走常规管线 */
+    /**
+     * 文字拼豆：栅格化与生成生命周期都交给 GenerationController。
+     *
+     * VM 只把当前网格尺寸作为默认值传下去；文字源图仍由 [GenerationHost]
+     * 在 Android 侧栅格化后写回，controller 不碰 Bitmap。
+     */
     fun generateFromText(text: String, width: Int? = null, height: Int? = null) {
-        val palette = selectedPalette ?: return
-        if (text.isBlank()) return
-        if (genState is GenState.Running || autoTuneRunning) return
-        generationController.cancel()
-        textGenerationJob?.cancel()
-        val w = (width ?: gridW).coerceIn(5, 200)
-        val h = (height ?: gridH).coerceIn(5, 200)
-        gridW = w
-        gridH = h
-        pendingCreationKind = SettingsStore.CreationKind.TEXT
-        textSource = text
-        projectPages = emptyList()
-        genState = GenState.Running(GenerationStage.DOWNSAMPLE, 0f)
-        textGenerationJob = viewModelScope.launch(Dispatchers.Default) {
-            try {
-                val bitmap = TextRasterizer.rasterize(text, w, h)
-                val pixels = IntArray(bitmap.width * bitmap.height)
-                bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-                // 二值化：文字是"白底黑字"，抗锯齿在笔画边缘留了一圈过渡灰，
-                // 降采样后灰格会被映射成杂色号导致字形破碎、识别率低。
-                // 按亮度阈值把过渡灰切开归为纯黑/纯白，字迹锐利后映射色号干净利落。
-                for (i in pixels.indices) {
-                    val p = pixels[i]
-                    val lum = (((p shr 16) and 0xFF) * 299 + ((p shr 8) and 0xFF) * 587 + (p and 0xFF) * 114) / 1000
-                    pixels[i] = if (lum >= 128) 0xFFFFFFFF.toInt() else 0xFF000000.toInt()
-                }
-                bitmap.setPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-                // 让文字栅格化的像素成为"当前源"，这样参数页有预览、调整参数后 generate() 重新生成仍是文字图
-                imagePixels = pixels
-                imageW = bitmap.width
-                imageH = bitmap.height
-                // 文字位图不是照片也不是像素画，清掉画像素网格，避免沿用上一张图的 56×50
-                pixelArtGrid = null
-                pixelArtMode = false
-                originalPixels = pixels
-                originalW = bitmap.width
-                originalH = bitmap.height
-                cropController.resetCropToFull(bitmap.width, bitmap.height)
-                imagePreview = bitmap // 保留位图供预览，不 recycle
-                val result = PatternGenerator.generate(
-                    pixels, bitmap.width, bitmap.height,
-                    GeneratorOptions(
-                        gridW = w,
-                        gridH = h,
-                        maxColors = if (limitColors) maxColors.coerceIn(1, 64) else null,
-                        cleanupEnabled = true,
-                        ditheringEnabled = false,
-                        filterLevel = filterLevel,
-                        // 文字画布尺寸就是用户选的成品尺寸，不能再被自动取景裁掉白边
-                        autoFrame = false,
-                    ),
-                    palette,
-                ) { stage, progress ->
-                    genState = GenState.Running(stage, progress)
-                }
-                genState = GenState.Done(result)
-                saveAfterGenerate(result)
-                withContext(Dispatchers.Main) {
-                    previewReturn = Screen.HOME
-                    previewReturnTab = HomeTab.CREATE
-                    screen = Screen.PREVIEW
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                genState = GenState.Error(e.message ?: "文字生成失败")
-            }
-        }
+        generationController.generateFromText(text, width ?: gridW, height ?: gridH)
     }
 
     /** 打开已有项目（进入编辑器继续修改） */
@@ -1947,6 +1876,43 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         override fun navigateToPreview() {
             previewReturn = Screen.PARAMS
             previewReturnTab = null
+            screen = Screen.PREVIEW
+        }
+
+        override fun beginTextGeneration(text: String, width: Int, height: Int) {
+            pendingCreationKind = SettingsStore.CreationKind.TEXT
+            textSource = text
+            gridW = width
+            gridH = height
+            projectPages = emptyList()
+        }
+
+        /**
+         * 文字栅格化留在 Android 侧：Bitmap / Canvas / 系统字体都属于宿主。
+         * controller 只拿「就绪/失败」，不把 Bitmap 拖进可单测的生成域。
+         */
+        override suspend fun prepareTextSource(text: String, width: Int, height: Int): Boolean {
+            val source = TextRasterizer.rasterizeSource(text, width, height)
+            if (source.width <= 0 || source.height <= 0) return false
+            // 文字栅格化的像素成为"当前源"：参数页有预览，改参数后 generate() 仍是文字图
+            // Host 接口里 imagePixels 是只读 val，写回必须显式指向 VM
+            this@AppViewModel.imagePixels = source.pixels
+            this@AppViewModel.imageW = source.width
+            this@AppViewModel.imageH = source.height
+            // 文字位图不是照片也不是像素画，清掉画像素网格，避免沿用上一张图
+            this@AppViewModel.pixelArtGrid = null
+            this@AppViewModel.pixelArtMode = false
+            this@AppViewModel.originalPixels = source.pixels
+            this@AppViewModel.originalW = source.width
+            this@AppViewModel.originalH = source.height
+            cropController.resetCropToFull(source.width, source.height)
+            this@AppViewModel.imagePreview = source.preview // 保留位图供预览，不 recycle
+            return true
+        }
+
+        override fun navigateToTextPreview() {
+            previewReturn = Screen.HOME
+            previewReturnTab = HomeTab.CREATE
             screen = Screen.PREVIEW
         }
 

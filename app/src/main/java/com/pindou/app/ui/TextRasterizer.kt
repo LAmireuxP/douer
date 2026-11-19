@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
 import androidx.core.graphics.createBitmap
+import com.pindou.app.core.text.TextBinarizer
 import kotlin.math.roundToInt
 
 /**
@@ -13,6 +14,31 @@ import kotlin.math.roundToInt
  * 渲染为「黑字白底」，背景移除可配合使用（自动去掉白底）。
  */
 object TextRasterizer {
+
+    /** 可直接作为生成源的文字图：二值化像素 + 预览位图 */
+    class TextSource(
+        val pixels: IntArray,
+        val width: Int,
+        val height: Int,
+        val preview: Bitmap,
+    )
+
+    /**
+     * 栅格化 + 二值化一步到位。
+     *
+     * 生成管线要的是「每格非黑即白」，预览要的是位图；两者共用同一份
+     * 二值化结果，避免调用方再抄一遍亮度公式。
+     */
+    fun rasterizeSource(text: String, outWidth: Int, outHeight: Int): TextSource {
+        val bitmap = rasterize(text, outWidth, outHeight)
+        val w = bitmap.width
+        val h = bitmap.height
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+        TextBinarizer.binarize(pixels)
+        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
+        return TextSource(pixels, w, h, bitmap)
+    }
 
     /**
      * @param text 文字内容（支持中英文与 emoji，取决于系统字体）
