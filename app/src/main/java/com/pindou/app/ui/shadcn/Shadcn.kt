@@ -189,6 +189,7 @@ fun TextButton(
 fun ShCard(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
+    border: BorderStroke? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val shape = RoundedCornerShape(12.dp)
@@ -197,7 +198,8 @@ fun ShCard(
         modifier = modifier
             .clip(shape)
             .background(MaterialTheme.colorScheme.surface)
-            .border(1.dp, MaterialTheme.colorScheme.outline, shape)
+            // 选中态由调用点传 2dp 主色描边；默认仍是 1dp hairline
+            .border(border ?: BorderStroke(1.dp, MaterialTheme.colorScheme.outline), shape)
             .then(
                 if (onClick != null) {
                     Modifier

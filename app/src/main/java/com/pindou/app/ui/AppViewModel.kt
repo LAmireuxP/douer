@@ -22,7 +22,6 @@ import com.pindou.app.core.data.ProjectRepository
 import com.pindou.app.core.data.SettingsStore
 import com.pindou.app.core.editor.EditorEngine
 import com.pindou.app.core.editor.ColorReplaceOps
-import com.pindou.app.core.editor.PaletteOps
 import com.pindou.app.core.editor.ShapeTool
 import com.pindou.app.core.editor.SymmetryMode
 import com.pindou.app.core.image.CropRect
@@ -50,6 +49,7 @@ import com.pindou.app.ui.theme.AppThemes
 import com.pindou.app.ui.pixel.PixelCalibrationController
 import com.pindou.app.ui.library.ProjectLibraryController
 import com.pindou.app.ui.crop.CropController
+import com.pindou.app.ui.editor.EditorController
 import com.pindou.app.ui.generate.GenerationController
 import com.pindou.app.ui.studio.StudioPersistence
 import com.pindou.app.ui.studio.StudioSession
@@ -645,8 +645,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     var adaptiveScale by mutableFloatStateOf(1f)
         private set
 
-    /** 自适应的锚定格数（点自适应时的网格长边）；0 = 未处于自适应状态 */
-    private var adaptiveAnchor = 0
+    /**
+     * 自适应的锚定格数（点自适应时的网格长边）；0 = 未处于自适应状态。
+     * 用 State 而不是普通 Int：参数页要据它点亮「自适应」档，
+     * 只改宽高不重算锚点时界面也得跟着变。
+     */
+    private var adaptiveAnchor by mutableIntStateOf(0)
+
+    /** 当前网格是否来自「自适应」档（参数页 chip 选中态用） */
+    val isAdaptive: Boolean get() = adaptiveAnchor > 0
 
     fun applyAdaptiveSize() {
         if (imageW <= 0 || imageH <= 0) return
@@ -1653,60 +1660,30 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun undoEditor() {
-        editor?.undo()
-        notifyEditorChanged()
-    }
+    // ---------- 编辑器子域 ----------
 
-    fun redoEditor() {
-        editor?.redo()
-        notifyEditorChanged()
-    }
+    /** 页操作 / 几何变换 / 整图换色都走 controller，VM 只保留同名转发 */
+    val editorController = EditorController(EditorHost())
 
-    // ---------- 编辑器：页操作 ----------
+    fun undoEditor() = editorController.undo()
 
-    /** 切换页 */
-    fun switchEditorPage(index: Int) {
-        editor?.setPage(index)
-        notifyEditorChanged()
-    }
+    fun redoEditor() = editorController.redo()
 
-    /** 新增一页（可复制当前页） */
-    fun addEditorPage(copyCurrent: Boolean) {
-        editor?.addPage(copyCurrent)
-        notifyEditorChanged()
-    }
+    fun switchEditorPage(index: Int) = editorController.switchPage(index)
 
-    /** 删除一页（至少保留一页） */
-    fun removeEditorPage(index: Int) {
-        editor?.removePage(index)
-        notifyEditorChanged()
-    }
+    fun addEditorPage(copyCurrent: Boolean) = editorController.addPage(copyCurrent)
 
-    /** 改尺寸：所有页内容居中保留 */
-    fun resizeEditor(newWidth: Int, newHeight: Int) {
-        val engine = editor ?: return
-        engine.resize(newWidth.coerceIn(5, 500), newHeight.coerceIn(5, 500))
-        notifyEditorChanged()
-    }
+    fun removeEditorPage(index: Int) = editorController.removePage(index)
 
-    /** 编辑时裁剪：只保留 (left, top) 起的 w×h，所有页同步，可撤销 */
-    fun cropEditor(left: Int, top: Int, newWidth: Int, newHeight: Int) {
-        val engine = editor ?: return
-        val w = newWidth.coerceIn(5, 500)
-        val h = newHeight.coerceIn(5, 500)
-        if (left < 0 || top < 0) return
-        if (left + w > engine.width || top + h > engine.height) return
-        if (engine.crop(left, top, w, h)) notifyEditorChanged()
-    }
+    fun resizeEditor(newWidth: Int, newHeight: Int) =
+        editorController.resize(newWidth, newHeight)
 
-    fun flipEditorHorizontal() {
-        if (editor?.flipHorizontal() == true) notifyEditorChanged()
-    }
+    fun cropEditor(left: Int, top: Int, newWidth: Int, newHeight: Int) =
+        editorController.crop(left, top, newWidth, newHeight)
 
-    fun flipEditorVertical() {
-        if (editor?.flipVertical() == true) notifyEditorChanged()
-    }
+    fun flipEditorHorizontal() = editorController.flipHorizontal()
+
+    fun flipEditorVertical() = editorController.flipVertical()
 
     /**
      * 图纸预览页的镜像：直接重排当前所有页并立即落库。
@@ -1763,9 +1740,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun rotateEditor(clockwise: Boolean) {
-        if (editor?.rotate90(clockwise) == true) notifyEditorChanged()
-    }
+    fun rotateEditor(clockwise: Boolean) = editorController.rotate90(clockwise)
 
     /** 参考图叠加开关 */
     fun toggleRefOverlay() {
@@ -1778,129 +1753,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---------- 编辑器：色板操作 ----------
 
-    /** 换品牌：按 ΔE2000 最近色整图重映射并立即持久化 */
-    fun applyPaletteRemap(newPalette: BeadPalette) {
-        val engine = editor ?: return
-        val current = (genState as? GenState.Done)?.result ?: return
-        val remapped = PaletteOps.remapToPalette(engine.pages, current.palette, newPalette)
-        editor = EditorEngine(engine.width, engine.height, remapped, engine.locks, engine.pageIndex)
-        genState = GenState.Done(
-            PatternResult(engine.width, engine.height, remapped[0], newPalette, current.elapsedMs),
-        )
-        projectPages = remapped
-        selectedPalette = newPalette
-        // 新品牌色号数量可能不同，旧索引越界会让编辑页顶部色块直接崩
-        editorColor = editorColor.coerceIn(0, newPalette.colors.lastIndex)
-        editorRecentColors.clear()
-        val id = currentProjectId
-        if (id != null) {
-            viewModelScope.launch {
-                repository.updateCells(
-                    id = id,
-                    width = engine.width,
-                    height = engine.height,
-                    cells = remapped.reduce { acc, cur -> acc + cur },
-                    locked = engine.locks.reduce { acc, cur -> acc + cur },
-                    palette = newPalette,
-                    pages = remapped.size,
-                )
-            }
-        }
-        notifyEditorChanged()
-        toast = "已换用「${newPalette.brandLabel}」色卡"
-    }
+    fun applyPaletteRemap(newPalette: BeadPalette) =
+        editorController.applyPaletteRemap(newPalette)
 
-    /**
-     * 全图合并相近色（ΔE 阈值），沿用编辑引擎的撤销栈：
-     * 合并后按一次撤销即可回到合并前，不丢编辑历史。
-     * 返回逐条「旧色 → 新色 · 格数」明细，UI 用于展示合并了什么。
-     */
-    fun mergeSimilarEditorColorsWithReport(maxDeltaE: Double): List<ColorReplaceOps.Move> {
-        val engine = editor ?: return emptyList()
-        val palette = selectedPalette ?: return emptyList()
-        val outcome = ColorReplaceOps.mergeSimilar(engine.pages, engine.locks, palette, maxDeltaE)
-        if (!outcome.changed) {
-            toast = "ΔE ≤ %.1f 没有可合并的相近色".format(maxDeltaE)
-            return emptyList()
-        }
-        if (!engine.applyPages(outcome.pages)) return emptyList()
-        syncEditorAfterColorOp()
-        persistEditorPages()
-        val usedBefore = engine.pages.flatMap { p -> p.filter { it >= 0 } }.distinct().size
-        toast = "已合并 ${outcome.moves.size} 组 · ${outcome.movedCells} 格（剩 $usedBefore 色）"
-        return outcome.moves
-    }
+    fun mergeSimilarEditorColorsWithReport(maxDeltaE: Double): List<ColorReplaceOps.Move> =
+        editorController.mergeSimilar(maxDeltaE)
 
-    /**
-     * 替换相似色：[from] 及与它 ΔE ≤ [maxDeltaE] 的已用色统一替换为 [to]。
-     * maxDeltaE = 0 即只替换这一个色号。返回明细供 UI 展示。
-     */
     fun replaceSimilarEditorColors(
         from: Int,
         to: Int,
         maxDeltaE: Double,
-    ): List<ColorReplaceOps.Move> {
-        val engine = editor ?: return emptyList()
-        val palette = selectedPalette ?: return emptyList()
-        if (from == to) {
-            toast = "源色与目标色相同"
-            return emptyList()
-        }
-        val outcome = ColorReplaceOps.replaceSimilar(
-            engine.pages, engine.locks, palette, from, to, maxDeltaE,
-        )
-        if (!outcome.changed) {
-            toast = if (outcome.lockedSkipped > 0) {
-                "命中 ${outcome.lockedSkipped} 格，但都是锁定格"
-            } else {
-                "没有匹配的格子"
-            }
-            return emptyList()
-        }
-        if (!engine.applyPages(outcome.pages)) return emptyList()
-        syncEditorAfterColorOp()
-        persistEditorPages()
-        val target = palette.colors.getOrNull(to)?.code ?: "?"
-        toast = "已把 ${outcome.moves.size} 色 · ${outcome.movedCells} 格换成 $target"
-        return outcome.moves
-    }
-
-    /** 全局换色后同步 genState / projectPages，并刷新画布 */
-    private fun syncEditorAfterColorOp() {
-        val engine = editor ?: return
-        val current = (genState as? GenState.Done)?.result ?: return
-        val pages = engine.pages.map { it.copyOf() }
-        projectPages = pages
-        genState = GenState.Done(
-            current.copy(
-                width = engine.width,
-                height = engine.height,
-                cells = pages.first(),
-                palette = selectedPalette ?: current.palette,
-            ),
-        )
-        editorRevision++
-    }
-
-    /** 全局换色后立即落库（拷贝数组，避免协程执行时被继续编辑） */
-    private fun persistEditorPages() {
-        val engine = editor ?: return
-        val id = currentProjectId ?: return
-        val palette = selectedPalette ?: return
-        val pages = engine.pages.map { it.copyOf() }
-        val locks = engine.locks.map { it.copyOf() }
-        viewModelScope.launch {
-            repository.updateCells(
-                id = id,
-                width = engine.width,
-                height = engine.height,
-                cells = pages.reduce { acc, cur -> acc + cur },
-                locked = locks.reduce { acc, cur -> acc + cur },
-                palette = palette,
-                pages = pages.size,
-            )
-        }
-    }
+    ): List<ColorReplaceOps.Move> = editorController.replaceSimilar(from, to, maxDeltaE)
 
     // ---------- .bpat 导入导出 ----------
 
@@ -2166,6 +2029,79 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         override fun navigateToParams() {
             paramsFromCrop = true
             this@AppViewModel.screen = Screen.PARAMS
+        }
+    }
+
+    /** 编辑器 controller 回调：引擎、当前图纸、项目 id 和仓储仍归 VM。 */
+    private inner class EditorHost : EditorController.Host {
+        override val engine: EditorEngine?
+            get() = this@AppViewModel.editor
+
+        override fun installEngine(engine: EditorEngine) {
+            this@AppViewModel.editor = engine
+        }
+
+        override val pages: List<IntArray>
+            get() = projectPages
+
+        override fun setPages(pages: List<IntArray>) {
+            projectPages = pages
+        }
+
+        override val done: PatternResult?
+            get() = (genState as? GenState.Done)?.result
+
+        override fun setDone(result: PatternResult) {
+            genState = GenState.Done(result)
+        }
+
+        override val palette: BeadPalette?
+            get() = selectedPalette
+
+        override fun setPalette(palette: BeadPalette) {
+            selectedPalette = palette
+        }
+
+        override var colorIndex: Int
+            get() = editorColor
+            set(value) {
+                editorColor = value
+            }
+
+        override fun clearRecentColors() {
+            editorRecentColors.clear()
+        }
+
+        override val projectId: Long?
+            get() = currentProjectId
+
+        override fun persist(
+            width: Int,
+            height: Int,
+            pages: List<IntArray>,
+            locks: List<BooleanArray>,
+            palette: BeadPalette,
+        ) {
+            val id = currentProjectId ?: return
+            viewModelScope.launch {
+                repository.updateCells(
+                    id = id,
+                    width = width,
+                    height = height,
+                    cells = pages.reduce { acc, cur -> acc + cur },
+                    locked = locks.reduce { acc, cur -> acc + cur },
+                    palette = palette,
+                    pages = pages.size,
+                )
+            }
+        }
+
+        override fun notifyChanged() {
+            notifyEditorChanged()
+        }
+
+        override fun toast(message: String) {
+            this@AppViewModel.toast = message
         }
     }
 
