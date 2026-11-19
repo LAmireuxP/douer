@@ -17,7 +17,8 @@ val keystoreProps = Properties().apply {
 android {
     namespace = "com.pindou.app"
     // Compose 1.9（backdrop 依赖）要求 compileSdk 35；targetSdk 仍留 34，行为不变
-    compileSdk = 35
+    // compileSdk 36：只为对齐最新编译目标；targetSdk 仍是 34，运行时行为不变
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.pindou.app"
