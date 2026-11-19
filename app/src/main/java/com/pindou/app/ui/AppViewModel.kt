@@ -143,7 +143,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 预览页是否还允许回参数页调整（只有从参数页来的生成结果才有源图） */
     val canAdjustParams: Boolean
-        get() = previewReturn == Screen.PARAMS && imagePixels != null && textSource == null
+        get() = previewReturn == Screen.PARAMS && imagePixels != null
 
     /** 本次编辑是否由项目库打开（决定编辑完成后预览返回哪里） */
     private var editorFromLibrary = false
@@ -1857,7 +1857,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         override fun navigateToTextPreview() {
-            previewReturn = Screen.HOME
+            // 文字预览也允许回参数页：改网格/色卡/过滤后重新生成，或点“改文字”。
+            // 从参数页再返回仍落到创建页（backFromParams → backToHome）。
+            previewReturn = Screen.PARAMS
             previewReturnTab = HomeTab.CREATE
             screen = Screen.PREVIEW
         }
