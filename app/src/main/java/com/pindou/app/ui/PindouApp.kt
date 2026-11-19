@@ -457,16 +457,20 @@ private fun GlassBottomBar(
                     onDragCancel = { drag = 0f },
                     onHorizontalDrag = { change, amount ->
                         drag += amount
-                        clickGate[0] = SystemClock.uptimeMillis() + 250L
                         change.consume()
                     },
                     onDragEnd = {
-                        clickGate[0] = SystemClock.uptimeMillis() + 250L
                         val threshold = size.width / Tabs.size * 0.22f
-                        when {
+                        val swipe = when {
                             // 底栏像滑片：向左拖 = 上一页，向右拖 = 下一页。
-                            drag <= -threshold -> swipeNow(-1)
-                            drag >= threshold -> swipeNow(1)
+                            drag <= -threshold -> -1
+                            drag >= threshold -> 1
+                            else -> 0
+                        }
+                        if (swipe != 0) {
+                            // 只在真的切页时落闸；未过阈值的小滑动不能吞掉下一拍点击。
+                            clickGate[0] = SystemClock.uptimeMillis() + 250L
+                            swipeNow(swipe)
                         }
                         drag = 0f
                     },
