@@ -29,7 +29,7 @@ object ConstructionResumePlan {
         height: Int,
     ): Plan {
         val pages = pageCount.coerceAtLeast(1)
-        val expected = pageSize.coerceAtLeast(0) * pages
+        val expected = pageSize * pages
         val orientation = orientationFrom(orientationCode)
         if (pageSize <= 0) {
             return Plan(BooleanArray(0), orientation, 0)

@@ -230,6 +230,36 @@ class ProjectRepository(private val context: Context) {
     }
 
     /**
+     * 启动对账：清掉删除撤销窗口内进程被杀留下的无主文件。
+     *
+     * 只扫 thumbs / studio / refs 三个目录；studio 与 refs 按文件名里的
+     * 项目 id 判断，项目还在就保留（即使路径列没写成功），避免误删可恢复数据。
+     * 10 分钟内的新文件不动，防止和当前会话的写入打架。
+     */
+    suspend fun purgeOrphanFiles(now: Long = System.currentTimeMillis()): Int =
+        withContext(Dispatchers.IO) {
+            val refs = dao.fileRefs()
+            val referenced = refs
+                .flatMap { listOfNotNull(it.thumbnailPath, it.studioPath, it.refPath) }
+                .toSet()
+            val ids = refs.mapTo(mutableSetOf()) { it.id }
+            val root = context.filesDir
+            val doomed = OrphanFilePlan.orphans(
+                thumbs = File(root, "thumbs").listFiles()?.toList().orEmpty(),
+                studioFiles = File(root, "studio").listFiles()?.toList().orEmpty(),
+                refFiles = File(root, "refs").listFiles()?.toList().orEmpty(),
+                referencedPaths = referenced,
+                projectIds = ids,
+                now = now,
+            )
+            var deleted = 0
+            doomed.forEach { file ->
+                if (runCatching { file.delete() }.getOrDefault(false)) deleted++
+            }
+            deleted
+        }
+
+    /**
      * 导入外部图纸（.bpat）或复刻项目：全量新建一个实体。
      * 复刻时缩略图复制一份独立文件，避免删除原项目时把复刻的图也删掉。
      */

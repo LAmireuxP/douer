@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -244,5 +245,21 @@ class GenerationControllerTest {
         gen.cancel()
 
         assertEquals(GenState.Idle, gen.state)
+    }
+
+    @Test
+    fun `文字生成清掉自动优选的旧结论`() {
+        val host = textHost()
+        val gen = controller(host)
+        gen.autoTune()
+        assertNotNull("自动优选应先产出结论", gen.autoTuneInfo)
+        assertTrue(gen.autoTuneScores.isNotEmpty())
+
+        gen.generateFromText("AB", 10, 10)
+
+        assertNull(gen.autoTuneInfo)
+        assertTrue(gen.autoTuneScores.isEmpty())
+        assertFalse(gen.autoTuneRunning)
+        assertTrue(gen.state is GenState.Done)
     }
 }

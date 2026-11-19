@@ -65,6 +65,14 @@ data class ProjectSummary(
     val pages: Int,
 )
 
+/** 只取文件引用，供启动时的孤儿文件对账；不读 cells/locked BLOB */
+data class ProjectFileRefs(
+    val id: Long,
+    val thumbnailPath: String?,
+    val studioPath: String?,
+    val refPath: String?,
+)
+
 @Dao
 interface ProjectDao {
     @Query("SELECT * FROM projects ORDER BY updatedAt DESC")
@@ -75,6 +83,9 @@ interface ProjectDao {
             "FROM projects ORDER BY updatedAt DESC",
     )
     fun observeSummaries(): Flow<List<ProjectSummary>>
+
+    @Query("SELECT id, thumbnailPath, studioPath, refPath FROM projects")
+    suspend fun fileRefs(): List<ProjectFileRefs>
 
     @Query("SELECT * FROM projects WHERE id = :id")
     suspend fun getById(id: Long): ProjectEntity?

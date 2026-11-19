@@ -424,6 +424,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
+        // 删除撤销窗口内进程被杀会留下无主缩略图/sidecar/参考图；
+        // 启动时按 DB 引用对账一次（10 分钟内的新文件不动，见 OrphanFilePlan）。
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { repository.purgeOrphanFiles() }
+        }
         viewModelScope.launch(Dispatchers.IO) {
             val loaded = PaletteAssets.loadAll(application)
             palettes = loaded

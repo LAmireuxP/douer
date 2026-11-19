@@ -193,8 +193,10 @@ class GenerationController(
             } catch (e: Exception) {
                 state = GenState.Error(e.message ?: "自动优选失败")
             } finally {
+                // 先落 false：Unconfined 下 launch 可能在赋值 autoTuneJob 之前就跑完，
+                // 自引用判断会失效，running 会永远卡在 true。
+                autoTuneRunning = false
                 if (autoTuneJob === coroutineContext[Job]) {
-                    autoTuneRunning = false
                     autoTuneJob = null
                 }
             }
@@ -223,6 +225,10 @@ class GenerationController(
         generationJob = null
         autoTuneJob?.cancel()
         autoTuneJob = null
+        // 文字生成会覆盖 genState；自动优选的旧结论/得分不能留在参数页
+        autoTuneInfo = null
+        autoTuneScores = emptyList()
+        autoTuneRunning = false
 
         host.beginTextGeneration(text, w, h)
         state = GenState.Running(GenerationStage.DOWNSAMPLE, 0f)
