@@ -25,6 +25,7 @@ import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -463,8 +464,9 @@ private fun GlassBottomBar(
                         clickGate[0] = SystemClock.uptimeMillis() + 250L
                         val threshold = size.width / Tabs.size * 0.22f
                         when {
-                            drag <= -threshold -> swipeNow(1)
-                            drag >= threshold -> swipeNow(-1)
+                            // 底栏像滑片：向左拖 = 上一页，向右拖 = 下一页。
+                            drag <= -threshold -> swipeNow(-1)
+                            drag >= threshold -> swipeNow(1)
                         }
                         drag = 0f
                     },
@@ -607,13 +609,24 @@ private fun GlassBottomBar(
                         label = "tabTint",
                     )
                     val interaction = remember { MutableInteractionSource() }
+                    val pressed by interaction.collectIsPressedAsState()
+                    val pressedFill by animateColorAsState(
+                        targetValue = if (pressed) {
+                            accent.copy(alpha = if (dark) 0.16f else 0.10f)
+                        } else {
+                            Color.Transparent
+                        },
+                        animationSpec = tween(Motion.FAST / 2),
+                        label = "tabPressedFill",
+                    )
 
                     Column(
                         modifier = Modifier
                             .width(slot)
                             .fillMaxHeight()
                             .clip(RoundedCornerShape(24.dp))
-                            .pressScale(interaction, pressedScale = 0.92f)
+                            .background(pressedFill)
+                            .pressScale(interaction, pressedScale = 0.88f)
                             .clickable(
                                 interactionSource = interaction,
                                 indication = null,
