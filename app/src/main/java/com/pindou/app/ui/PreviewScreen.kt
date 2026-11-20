@@ -2,6 +2,7 @@ package com.pindou.app.ui
 
 import com.pindou.app.ui.icon.MorphIcons
 import android.Manifest
+import android.graphics.Bitmap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -46,6 +47,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.pindou.app.core.export.ExportService
 import com.pindou.app.core.pattern.AutoTuner
+import com.pindou.app.core.pattern.AutoTuneDelta
 import com.pindou.app.core.pattern.CodeLabelMode
 import com.pindou.app.ui.motion.AnimatedNumber
 import com.pindou.app.ui.shadcn.Button
@@ -91,6 +93,7 @@ private fun PreviewContent(vm: AppViewModel, done: GenState.Done) {
     var showCodes by remember { mutableStateOf(true) }
     var simplifiedLabels by remember { mutableStateOf(true) }
     var fullscreen by remember { mutableStateOf(false) }
+    var splitCompare by remember { mutableStateOf(false) }
     val codeLabels = if (simplifiedLabels) CodeLabelMode.OUTLINE else CodeLabelMode.FULL
     val pages = remember(result, selected, vm.projectPages) {
         if (selected != null) listOf(result) else vm.currentPages().ifEmpty { listOf(result) }
@@ -203,8 +206,16 @@ private fun PreviewContent(vm: AppViewModel, done: GenState.Done) {
                 ) {
                     levelBests.forEach { candidate ->
                         val index = alternatives.indexOfFirst { it === candidate }
+                        // 差值以「已应用的这版」为基准：用户要判断的是换过去值不值
+                        val delta = AutoTuneDelta.label(
+                            baseScore = done.result.quality.score,
+                            baseColors = done.result.quality.colorCount,
+                            candidateScore = candidate.score,
+                            candidateColors = candidate.result.quality.colorCount,
+                        )
                         ShChip(
-                            text = "${candidate.filterLevel.label} ${candidate.score}",
+                            text = "${candidate.filterLevel.label} ${candidate.score}" +
+                                if (delta.isNotEmpty()) " · $delta" else "",
                             selected = selectedAlt == index,
                             onClick = { selectedAlt = index },
                         )
@@ -479,20 +490,25 @@ private fun PreviewContent(vm: AppViewModel, done: GenState.Done) {
                         modifier = Modifier.weight(1f),
                     ) { Text("CSV 清单") }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
-                    if (vm.originalPixels != null) {
+                if (vm.originalPixels != null) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
                         OutlinedButton(
                             onClick = {
                                 runExport("前后对比") { vm.exportComparison(result) }
                             },
                             modifier = Modifier.weight(1f),
                         ) { Text("前后对比") }
+                        // 屏幕内交互版：拖分割线看细节差在哪，不落文件
+                        OutlinedButton(
+                            onClick = { splitCompare = true },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("对比预览") }
                     }
-                    TextButton(
-                        onClick = { ExportService.shareList(context, pages, projectName) },
-                        modifier = Modifier.weight(1f),
-                    ) { Text("分享清单文本") }
                 }
+                TextButton(
+                    onClick = { ExportService.shareList(context, pages, projectName) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("分享清单文本") }
                 exportMsg?.let {
                     Text(
                         it,
@@ -593,6 +609,20 @@ private fun PreviewContent(vm: AppViewModel, done: GenState.Done) {
                 }
             }
         }
+    }
+
+    // 交互式前后对比：原图位图只在打开时构建一次，拖动分割线只改裁剪比例
+    if (splitCompare && vm.originalPixels != null) {
+        val pixels = vm.originalPixels!!
+        val originalBitmap = remember(pixels, vm.originalW, vm.originalH) {
+            // colors 版本没有 KTX 包装（只有宽高版有），这里保留平台 API
+            Bitmap.createBitmap(pixels, vm.originalW, vm.originalH, Bitmap.Config.ARGB_8888)
+        }
+        CompareSplitDialog(
+            original = originalBitmap,
+            result = result,
+            onDismiss = { splitCompare = false },
+        )
     }
 
     pdfPreview?.let { file ->
