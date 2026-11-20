@@ -34,7 +34,6 @@ import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -751,23 +750,12 @@ private fun GlassBottomBar(
                         label = "tabTint",
                     )
                     val interaction = remember { MutableInteractionSource() }
-                    val pressed by interaction.collectIsPressedAsState()
-                    val pressedFill by animateColorAsState(
-                        targetValue = if (pressed) {
-                            accent.copy(alpha = if (dark) 0.16f else 0.10f)
-                        } else {
-                            Color.Transparent
-                        },
-                        animationSpec = tween(Motion.FAST / 2),
-                        label = "tabPressedFill",
-                    )
 
                     Column(
                         modifier = Modifier
                             .width(slot)
                             .fillMaxHeight()
                             .clip(RoundedCornerShape(24.dp))
-                            .background(pressedFill)
                             .pressScale(interaction, pressedScale = 0.88f)
                             .clickable(
                                 interactionSource = interaction,
