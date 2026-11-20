@@ -702,42 +702,53 @@ private fun GlassBottomBar(
                 val rectW = slotPx * 0.98f
                 val rectH = size.height - 4.dp.toPx()
                 val shade = if (dark) Color.White else Color.Black
-                // 受压段压深：玻璃被按下去的感觉，不带主色，不会再出现蓝圈
+                val topLeft = Offset(center.x - rectW / 2f, (size.height - rectH) / 2f)
+                val rectSize = androidx.compose.ui.geometry.Size(rectW, rectH)
+                val corner = androidx.compose.ui.geometry.CornerRadius(26.dp.toPx())
+                // 参照酷安：按压不是压深，而是浮起一颗半透明白色"液滴"（选中项之外）
                 drawRoundRect(
-                    brush = Brush.verticalGradient(
-                        listOf(
-                            shade.copy(alpha = (if (dark) 0.16f else 0.14f) * pressAlpha),
-                            shade.copy(alpha = (if (dark) 0.07f else 0.06f) * pressAlpha),
-                        ),
+                    color = Color.White.copy(
+                        alpha = (if (dark) 0.16f else 0.58f) * pressAlpha,
                     ),
-                    topLeft = Offset(center.x - rectW / 2f, (size.height - rectH) / 2f),
-                    size = androidx.compose.ui.geometry.Size(rectW, rectH),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(26.dp.toPx()),
+                    topLeft = topLeft,
+                    size = rectSize,
+                    cornerRadius = corner,
                 )
-                // 上缘内高光：让压深有边缘，不像一块灰补丁
+                // 液滴外圈：柔光 + 1dp 亮边，和底下的玻璃分层
                 drawRoundRect(
-                    color = Color.White.copy(alpha = (if (dark) 0.18f else 0.35f) * pressAlpha),
-                    topLeft = Offset(center.x - rectW / 2f, (size.height - rectH) / 2f),
+                    color = Color.White.copy(alpha = 0.10f * pressAlpha),
+                    topLeft = Offset(topLeft.x - 2.dp.toPx(), topLeft.y - 2.dp.toPx()),
+                    size = androidx.compose.ui.geometry.Size(
+                        rectW + 4.dp.toPx(),
+                        rectH + 4.dp.toPx(),
+                    ),
+                    cornerRadius = corner,
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(3.dp.toPx()),
+                )
+                drawRoundRect(
+                    color = Color.White.copy(alpha = (if (dark) 0.28f else 0.85f) * pressAlpha),
+                    topLeft = topLeft,
+                    size = rectSize,
+                    cornerRadius = corner,
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()),
+                )
+                // 底部一道更亮的弧光，像液滴的底缘
+                drawRoundRect(
+                    color = Color.White.copy(alpha = (if (dark) 0.20f else 0.40f) * pressAlpha),
+                    topLeft = Offset(topLeft.x, (size.height + rectH) / 2f - 1.5.dp.toPx()),
                     size = androidx.compose.ui.geometry.Size(rectW, 1.5.dp.toPx()),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(26.dp.toPx()),
+                    cornerRadius = corner,
                 )
-                // 内缘一圈深色，收出"按凹"的边界
-                drawRoundRect(
-                    color = shade.copy(alpha = 0.10f * pressAlpha),
-                    topLeft = Offset(center.x - rectW / 2f, (size.height + rectH) / 2f - 1.dp.toPx()),
-                    size = androidx.compose.ui.geometry.Size(rectW, 1.dp.toPx()),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(26.dp.toPx()),
-                )
-                // 外圈柔和压深
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(shade.copy(alpha = 0.06f * pressAlpha), Color.Transparent),
-                        center = center,
-                        radius = slotPx * 1.1f,
-                    ),
-                    radius = slotPx * 1.1f,
-                    center = center,
-                )
+                // shade 在深色主题仍用来给液滴外圈一点阴影，避免糊在白底上
+                if (dark) {
+                    drawRoundRect(
+                        color = Color.Black.copy(alpha = 0.18f * pressAlpha),
+                        topLeft = Offset(topLeft.x, topLeft.y + 1.dp.toPx()),
+                        size = rectSize,
+                        cornerRadius = corner,
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()),
+                    )
+                }
             }
             Box(
                 Modifier
