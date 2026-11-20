@@ -69,6 +69,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -86,7 +87,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpOffset
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
@@ -128,6 +128,8 @@ fun PindouApp(vm: AppViewModel) {
     val snackbarHostState = remember { SnackbarHostState() }
     val pendingUndo = vm.deleteUndo
     val appMotion = LocalMotion.current
+    // 拖动底栏时冻结 pager 自身的手势，避免「底栏驱动 + pager 惯性」双重滚动导致多跳一页
+    var barDragging by remember { mutableStateOf(false) }
     val homePager = rememberPagerState(initialPage = vm.homeTab.ordinal) {
         HomeTab.entries.size
     }
@@ -375,6 +377,7 @@ fun PindouApp(vm: AppViewModel) {
                             Screen.HOME -> HomeScreen(
                                 vm,
                                 pagerState = homePager,
+                                userScrollEnabled = !barDragging,
                                 onPickImage = ::pickImage,
                                 onPickPixel = ::pickPixelImage,
                                 onPickBpat = ::pickBpat,
@@ -422,6 +425,7 @@ fun PindouApp(vm: AppViewModel) {
                     ],
                     pagerState = homePager,
                     onSelect = { tab -> goToHomePage(tab.ordinal) },
+                    onDraggingChange = { barDragging = it },
                     modifier = Modifier,
                 )
             }
@@ -434,6 +438,7 @@ fun PindouApp(vm: AppViewModel) {
 private fun HomeScreen(
     vm: AppViewModel,
     pagerState: PagerState,
+    userScrollEnabled: Boolean = true,
     onPickImage: () -> Unit,
     onPickPixel: () -> Unit,
     onPickBpat: () -> Unit,
@@ -442,7 +447,7 @@ private fun HomeScreen(
     HorizontalPager(
         state = pagerState,
         modifier = Modifier.fillMaxSize(),
-        userScrollEnabled = !vm.librarySelecting,
+        userScrollEnabled = userScrollEnabled && !vm.librarySelecting,
         key = { page -> HomeTab.entries[page] },
     ) { page ->
         when (HomeTab.entries[page]) {
@@ -482,6 +487,7 @@ private fun GlassBottomBar(
     current: HomeTab,
     pagerState: PagerState,
     onSelect: (HomeTab) -> Unit,
+    onDraggingChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
@@ -489,6 +495,9 @@ private fun GlassBottomBar(
     // 底栏拖拽的"手指位移"（单位：页）。offsetFraction 在拖拽期间读不到时，
     // 靠它保证胶囊仍然跟手；松手吸附时归零。
     var dragVisual by remember { mutableFloatStateOf(0f) }
+    // 拖拽起点页：pager 的 currentPage 会在半页处跳变，结算必须从起点算，
+    // 否则会被算成「1 + 拖动量」而多跳一页。
+    var dragStartPage by remember { mutableIntStateOf(0) }
     val pillScale by animateFloatAsState(
         targetValue = if (barPressed) 0.94f else 1f,
         animationSpec = tween(Motion.FAST),
@@ -521,28 +530,40 @@ private fun GlassBottomBar(
                     onDragStart = {
                         drag = 0f
                         dragVisual = 0f
+                        dragStartPage = pagerState.currentPage
                         barPressed = true
+                        onDraggingChange(true)
                     },
                     onDragCancel = {
                         drag = 0f
                         dragVisual = 0f
                         barPressed = false
+                        onDraggingChange(false)
                     },
                     onHorizontalDrag = { change, amount ->
                         drag += amount
                         change.consume()
-                        // 直接推进 pager 的原始偏移：胶囊与页面同一帧跟手，不等松手
-                        pagerState.dispatchRawDelta(amount)
+                        // 底栏一个槽宽 = 一页：手指走一格，页面正好走完一页，
+                        // 胶囊（1:1 跟手）和页面才会同时到位；直接按 px 推会只走 1/3 页。
                         val slotPx = size.width.toFloat() / Tabs.size
-                        if (slotPx > 0f) dragVisual += amount / slotPx
+                        val viewport = pagerState.layoutInfo.viewportSize.width
+                        if (slotPx > 0f && viewport > 0) {
+                            val pageDelta = amount * viewport / slotPx
+                            pagerState.dispatchRawDelta(pageDelta)
+                            // 胶囊按手指位移走，并夹在当前页的边界内：到边时不脱手
+                            val min = -dragStartPage.toFloat()
+                            val max = (Tabs.size - 1 - dragStartPage).toFloat()
+                            dragVisual = (dragVisual + amount / slotPx).coerceIn(min, max)
+                        }
                     },
                     onDragEnd = {
                         barPressed = false
+                        onDraggingChange(false)
                         if (abs(drag) > 8f) {
                             // 只在真的拖动时落闸；轻点不能吞掉下一拍点击
                             clickGate[0] = SystemClock.uptimeMillis() + 250L
                         }
-                        val target = (pagerState.currentPage + pagerState.currentPageOffsetFraction)
+                        val target = (dragStartPage + dragVisual)
                             .roundToInt()
                             .coerceIn(0, Tabs.size - 1)
                         scope.launch { pagerState.animateScrollToPage(target) }
@@ -620,8 +641,10 @@ private fun GlassBottomBar(
             // 玻璃片直接跟 Pager 的 currentPage + offsetFraction 走。
             // 在组合阶段读：layout lambda 里读 offsetFraction 在拖拽时不触发重排，
             // 实测胶囊会停在旧页；这里宁可每帧重组这一个小条，也要跟手。
+            // 拖底栏时用 dragVisual（与 pager 实际滚动量一致），其余时候跟 pager 自己的偏移
             val pagePosition = (
-                pagerState.currentPage + pagerState.currentPageOffsetFraction + dragVisual
+                (if (barPressed) dragStartPage + dragVisual else pagerState.currentPage.toFloat()) +
+                    (if (barPressed) 0f else pagerState.currentPageOffsetFraction)
                 )
                 .coerceIn(0f, (Tabs.size - 1).toFloat())
             Box(
