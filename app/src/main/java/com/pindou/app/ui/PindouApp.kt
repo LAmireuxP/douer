@@ -81,6 +81,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
@@ -529,14 +530,13 @@ private fun GlassBottomBar(
     val glassTint = if (dark) Color(0xFF0A1117) else Color.White
     val alphas = glass.surfaceAlphas(dark)
 
-    Box(
+    BoxWithConstraints(
         modifier = modifier
             .navigationBarsPadding()
             .padding(horizontal = 20.dp, vertical = 10.dp)
             .widthIn(max = 372.dp)
             .fillMaxWidth()
             .height(64.dp)
-            // 只读触摸态：不消费事件，子项的 clickable 照常工作
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
@@ -549,8 +549,6 @@ private fun GlassBottomBar(
                     }
                 }
             }
-            // 拖动底栏 = 拖动胶囊：pager 偏移跟手走，标题/页面同步移动；
-            // 松手吸附到最近一页。和子项的 clickable 共存：没过 touch slop 的轻点仍是点 tab。
             .pointerInput(Unit) {
                 var drag = 0f
                 detectHorizontalDragGestures(
@@ -599,7 +597,16 @@ private fun GlassBottomBar(
                         drag = 0f
                     },
                 )
-            }
+            },
+    ) {
+        // 与内层 BoxWithConstraints 的 6dp 内边距对齐，否则图标槽位和胶囊会错位
+        val slot = (maxWidth - 12.dp) / Tabs.size
+        val dropletSlotPx = with(LocalDensity.current) { slot.toPx() }
+        Box(
+            Modifier
+                .fillMaxSize()
+            // 只读触摸态：不消费事件，子项的 clickable 照常工作
+
             .drawBackdrop(
                 backdrop = backdrop,
                 shape = { shape },
@@ -692,64 +699,6 @@ private fun GlassBottomBar(
                 animationSpec = tween(Motion.FAST),
                 label = "pillPress",
             )
-            Canvas(Modifier.matchParentSize()) {
-                if (pressAlpha <= 0.01f) return@Canvas
-                val center = Offset(
-                    (if (barPressed) pillCenterPx else pressX)
-                        .coerceIn(slotPx * 0.6f, size.width - slotPx * 0.6f),
-                    size.height / 2f,
-                )
-                val rectW = slotPx * 0.98f
-                val rectH = size.height - 4.dp.toPx()
-                val shade = if (dark) Color.White else Color.Black
-                val topLeft = Offset(center.x - rectW / 2f, (size.height - rectH) / 2f)
-                val rectSize = androidx.compose.ui.geometry.Size(rectW, rectH)
-                val corner = androidx.compose.ui.geometry.CornerRadius(26.dp.toPx())
-                // 参照酷安：按压不是压深，而是浮起一颗半透明白色"液滴"（选中项之外）
-                drawRoundRect(
-                    color = Color.White.copy(
-                        alpha = (if (dark) 0.16f else 0.58f) * pressAlpha,
-                    ),
-                    topLeft = topLeft,
-                    size = rectSize,
-                    cornerRadius = corner,
-                )
-                // 液滴外圈：柔光 + 1dp 亮边，和底下的玻璃分层
-                drawRoundRect(
-                    color = Color.White.copy(alpha = 0.10f * pressAlpha),
-                    topLeft = Offset(topLeft.x - 2.dp.toPx(), topLeft.y - 2.dp.toPx()),
-                    size = androidx.compose.ui.geometry.Size(
-                        rectW + 4.dp.toPx(),
-                        rectH + 4.dp.toPx(),
-                    ),
-                    cornerRadius = corner,
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(3.dp.toPx()),
-                )
-                drawRoundRect(
-                    color = Color.White.copy(alpha = (if (dark) 0.28f else 0.85f) * pressAlpha),
-                    topLeft = topLeft,
-                    size = rectSize,
-                    cornerRadius = corner,
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()),
-                )
-                // 底部一道更亮的弧光，像液滴的底缘
-                drawRoundRect(
-                    color = Color.White.copy(alpha = (if (dark) 0.20f else 0.40f) * pressAlpha),
-                    topLeft = Offset(topLeft.x, (size.height + rectH) / 2f - 1.5.dp.toPx()),
-                    size = androidx.compose.ui.geometry.Size(rectW, 1.5.dp.toPx()),
-                    cornerRadius = corner,
-                )
-                // shade 在深色主题仍用来给液滴外圈一点阴影，避免糊在白底上
-                if (dark) {
-                    drawRoundRect(
-                        color = Color.Black.copy(alpha = 0.18f * pressAlpha),
-                        topLeft = Offset(topLeft.x, topLeft.y + 1.dp.toPx()),
-                        size = rectSize,
-                        cornerRadius = corner,
-                        style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()),
-                    )
-                }
-            }
             Box(
                 Modifier
                     .offset(x = slot * pagePosition)
@@ -842,56 +791,122 @@ private fun GlassBottomBar(
                 }
             }
 
-            Row(
-                modifier = Modifier.fillMaxSize(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Tabs.forEach { tab ->
-                    val selected = current == tab.target
-                    val tint by animateColorAsState(
-                        targetValue = if (selected) selectedInk else idleInk,
-                        animationSpec = tween(Motion.FAST),
-                        label = "tabTint",
-                    )
-                    val interaction = remember { MutableInteractionSource() }
 
-                    Column(
-                        modifier = Modifier
-                            .width(slot)
-                            .fillMaxHeight()
-                            .clip(RoundedCornerShape(24.dp))
-                            .pressScale(interaction, pressedScale = 0.88f)
-                            .clickable(
-                                interactionSource = interaction,
-                                indication = null,
-                            ) {
-                                if (SystemClock.uptimeMillis() >= clickGate[0]) {
-                                    onSelect(tab.target)
-                                }
-                            },
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                    ) {
-                        AnimatedIconSwap(
-                            selected = selected,
-                            outlined = tab.outlined,
-                            filled = tab.filled,
-                            contentDescription = tab.label,
-                            tint = tint,
-                            size = 21.dp,
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = tab.label,
-                            color = tint,
-                            fontSize = 10.sp,
-                            lineHeight = 12.sp,
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+
+        }
+    }
+
+        // 酷安式液滴：比底栏更高更大的折射玻璃珠，允许溢出底栏边界
+        if (pressAlpha > 0.01f) {
+            val dropletWidthPx = dropletSlotPx * 1.22f
+            Box(
+                Modifier
+                    .offset {
+                        IntOffset(
+                            (pressX - dropletWidthPx / 2f).roundToInt(),
+                            -16.dp.roundToPx(),
                         )
                     }
-                }
+                    .width(with(LocalDensity.current) { dropletWidthPx.toDp() })
+                    .height(96.dp)
+                    .graphicsLayer { alpha = pressAlpha }
+                    .drawBackdrop(
+                        backdrop = backdrop,
+                        shape = { RoundedCornerShape(48.dp) },
+                        effects = {
+                            vibrancy()
+                            blur(10.dp.toPx())
+                            lens(
+                                refractionHeight = 14.dp.toPx(),
+                                refractionAmount = 24.dp.toPx(),
+                                depthEffect = true,
+                                chromaticAberration = true,
+                            )
+                        },
+                        highlight = {
+                            Highlight(
+                                width = 1.2.dp,
+                                alpha = if (dark) 0.70f else 0.95f,
+                                style = HighlightStyle.Default(
+                                    intensity = 0.70f,
+                                    angle = 45f,
+                                    falloff = 1.1f,
+                                ),
+                            )
+                        },
+                        shadow = {
+                            Shadow(
+                                radius = 16.dp,
+                                offset = DpOffset(0.dp, 8.dp),
+                                color = Color.Black.copy(alpha = if (dark) 0.35f else 0.16f),
+                            )
+                        },
+                        innerShadow = {
+                            InnerShadow(
+                                radius = 6.dp,
+                                offset = DpOffset(0.dp, 1.dp),
+                                color = Color.White.copy(alpha = if (dark) 0.16f else 0.55f),
+                                alpha = 0.9f,
+                            )
+                        },
+                        onDrawSurface = {
+                            drawRect(Color.White.copy(alpha = if (dark) 0.10f else 0.28f))
+                        },
+                    ),
+            )
+        }
 
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(64.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Tabs.forEach { tab ->
+                val selected = current == tab.target
+                val tint by animateColorAsState(
+                    targetValue = if (selected) selectedInk else idleInk,
+                    animationSpec = tween(Motion.FAST),
+                    label = "tabTint",
+                )
+                val interaction = remember { MutableInteractionSource() }
+
+                Column(
+                    modifier = Modifier
+                        .width(slot)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(24.dp))
+                        .pressScale(interaction, pressedScale = 0.88f)
+                        .clickable(
+                            interactionSource = interaction,
+                            indication = null,
+                        ) {
+                            if (SystemClock.uptimeMillis() >= clickGate[0]) {
+                                onSelect(tab.target)
+                            }
+                        },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    AnimatedIconSwap(
+                        selected = selected,
+                        outlined = tab.outlined,
+                        filled = tab.filled,
+                        contentDescription = tab.label,
+                        tint = tint,
+                        size = 21.dp,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = tab.label,
+                        color = tint,
+                        fontSize = 10.sp,
+                        lineHeight = 12.sp,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                    )
+                }
             }
+
         }
     }
 }
