@@ -799,11 +799,15 @@ private fun GlassBottomBar(
         // 酷安式液滴：比底栏更高更大的折射玻璃珠，允许溢出底栏边界
         if (pressAlpha > 0.01f) {
             val dropletWidthPx = dropletSlotPx * 1.35f
+            // 靠边时液滴往中间收，不探出底栏两端（酷安同款）
+            val barWidthPx = with(LocalDensity.current) { maxWidth.toPx() }
+            val halfDroplet = dropletWidthPx / 2f
+            val dropletCenterX = pressX.coerceIn(halfDroplet, barWidthPx - halfDroplet)
             Box(
                 Modifier
                     .offset {
                         IntOffset(
-                            (pressX - dropletWidthPx / 2f).roundToInt(),
+                            (dropletCenterX - halfDroplet).roundToInt(),
                             -16.dp.roundToPx(),
                         )
                     }
