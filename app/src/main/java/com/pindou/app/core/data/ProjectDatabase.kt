@@ -43,6 +43,8 @@ data class ProjectEntity(
     val refPath: String? = null,
     /** 画像素分层工程 sidecar 路径（null = 普通图纸或旧项目） */
     val studioPath: String? = null,
+    /** 累计施工时长（秒）；只记「在施工页动手」的时间，单次最多 2 小时 */
+    val buildSeconds: Long = 0,
 )
 
 /**
@@ -63,6 +65,7 @@ data class ProjectSummary(
     val fav: Boolean,
     val album: String,
     val pages: Int,
+    val buildSeconds: Long = 0,
 )
 
 /** 只取文件引用，供启动时的孤儿文件对账；不读 cells/locked BLOB */
@@ -79,7 +82,7 @@ interface ProjectDao {
     fun observeAll(): Flow<List<ProjectEntity>>
 
     @Query(
-        "SELECT id, name, width, height, paletteBrand, thumbnailPath, updatedAt, fav, album, pages " +
+        "SELECT id, name, width, height, paletteBrand, thumbnailPath, updatedAt, fav, album, pages, buildSeconds " +
             "FROM projects ORDER BY updatedAt DESC",
     )
     fun observeSummaries(): Flow<List<ProjectSummary>>
@@ -122,7 +125,7 @@ interface ProjectDao {
 
     // 重新生成：图纸整体变化（尺寸、色卡、格数据），施工进度随图纸作废（置空、游标归零），
     // 避免 doneCells 与新 cells 尺寸错位
-    @Query("UPDATE projects SET width = :width, height = :height, beadSize = :beadSize, paletteBrand = :paletteBrand, cells = :cells, locked = :locked, pages = 1, thumbnailPath = :thumb, doneCells = NULL, buildCursor = 0, updatedAt = :now WHERE id = :id")
+    @Query("UPDATE projects SET width = :width, height = :height, beadSize = :beadSize, paletteBrand = :paletteBrand, cells = :cells, locked = :locked, pages = 1, thumbnailPath = :thumb, doneCells = NULL, buildCursor = 0, buildSeconds = 0, updatedAt = :now WHERE id = :id")
     suspend fun updateContent(
         id: Long,
         width: Int,
@@ -140,6 +143,10 @@ interface ProjectDao {
 
     @Query("UPDATE projects SET doneCells = :done, buildOrientation = :orientation, buildCursor = :cursor, updatedAt = :now WHERE id = :id")
     suspend fun updateBuildProgress(id: Long, done: ByteArray, orientation: Int, cursor: Int, now: Long)
+
+    /** 施工时长累加；与进度同一次写库，避免两笔事务中间被杀进程丢时间 */
+    @Query("UPDATE projects SET buildSeconds = buildSeconds + :seconds WHERE id = :id")
+    suspend fun addBuildSeconds(id: Long, seconds: Long)
 
     @Query("UPDATE projects SET fav = :fav, updatedAt = :now WHERE id = :id")
     suspend fun setFav(id: Long, fav: Boolean, now: Long)
@@ -164,7 +171,7 @@ interface ProjectDao {
     suspend fun delete(id: Long)
 }
 
-@Database(entities = [ProjectEntity::class], version = 4, exportSchema = true)
+@Database(entities = [ProjectEntity::class], version = 5, exportSchema = true)
 abstract class PindouDatabase : RoomDatabase() {
     abstract fun projectDao(): ProjectDao
 
@@ -192,6 +199,13 @@ abstract class PindouDatabase : RoomDatabase() {
         val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE projects ADD COLUMN studioPath TEXT")
+            }
+        }
+
+        /** v4 → v5：累计施工时长（老项目从 0 开始记，不追溯） */
+        val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE projects ADD COLUMN buildSeconds INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

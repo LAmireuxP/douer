@@ -26,7 +26,9 @@ class SettingsStore(private val context: Context) {
         val THEME_SKIN = stringPreferencesKey("theme_skin")
         val REFRESH_MODE = stringPreferencesKey("refresh_mode")   // system | 60 | 90 | 120
         val AI_SUBJECT = booleanPreferencesKey("ai_subject_segmentation")
-        /** 施工页保持屏幕常亮；默认开——进入施工就代表正在动手。 */
+        /** 施工页常亮模式：on | 10 | 30 | 60 | off（见 KeepScreenPolicy） */
+        val KEEP_SCREEN_MODE = stringPreferencesKey("keep_screen_mode")
+        /** v1.3.2 及更早的布尔开关，只用于一次性迁移 */
         val KEEP_SCREEN_ON = booleanPreferencesKey("keep_screen_on")
         // 浮窗位置用 0..1 的比例保存，换屏幕/横竖屏后仍落在可见范围内。
         // -1 表示尚未自定义，使用默认左/右居中。
@@ -101,7 +103,7 @@ class SettingsStore(private val context: Context) {
         val themeSkin: String = "douer",
         val refreshMode: String = "system",
         val aiSubjectEnabled: Boolean = false,
-        val keepScreenOn: Boolean = true,
+        val keepScreenMode: String = "on",
         val studioToolX: Float = -1f,
         val studioToolY: Float = -1f,
         val studioColorX: Float = -1f,
@@ -125,7 +127,7 @@ class SettingsStore(private val context: Context) {
         themeSkin = this[THEME_SKIN] ?: "douer",
         refreshMode = this[REFRESH_MODE] ?: "system",
         aiSubjectEnabled = this[AI_SUBJECT] ?: false,
-        keepScreenOn = this[KEEP_SCREEN_ON] ?: true,
+        keepScreenMode = this.migratedKeepScreenMode(),
         studioToolX = this[STUDIO_TOOL_X] ?: -1f,
         studioToolY = this[STUDIO_TOOL_Y] ?: -1f,
         studioColorX = this[STUDIO_COLOR_X] ?: -1f,
@@ -169,8 +171,20 @@ class SettingsStore(private val context: Context) {
     suspend fun setAiSubjectEnabled(enabled: Boolean) =
         context.dataStore.edit { it[AI_SUBJECT] = enabled }
 
-    suspend fun setKeepScreenOn(enabled: Boolean) =
-        context.dataStore.edit { it[KEEP_SCREEN_ON] = enabled }
+    /**
+     * 旧布尔值迁移：老用户从没点过开关（默认 true）→ 常亮；
+     * 明确关掉过的人 → 30 分钟（嫌永不息屏的人，给个有限时长比直接黑屏贴心）。
+     * 「关」仍然可选，只是不作为迁移的默认落点。
+     */
+    private fun Preferences.migratedKeepScreenMode(): String {
+        this[KEEP_SCREEN_MODE]?.let { return com.pindou.app.core.build.KeepScreenPolicy.normalize(it) }
+        val legacy = this[KEEP_SCREEN_ON] ?: true
+        return if (legacy) "on" else "30"
+    }
+
+    suspend fun setKeepScreenMode(mode: String) = context.dataStore.edit {
+        it[KEEP_SCREEN_MODE] = com.pindou.app.core.build.KeepScreenPolicy.normalize(mode)
+    }
 
     suspend fun setStudioRailPositions(toolX: Float, toolY: Float, colorX: Float, colorY: Float) =
         context.dataStore.edit {

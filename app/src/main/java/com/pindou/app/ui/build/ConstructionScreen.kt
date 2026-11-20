@@ -32,6 +32,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -55,6 +56,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import com.pindou.app.core.build.ConstructionState
 import com.pindou.app.core.build.ConstructionColorGuide
+import com.pindou.app.core.build.KeepScreenPolicy
 import com.pindou.app.ui.AppViewModel
 import com.pindou.app.ui.CellCodeDrawer.drawCellCode
 import com.pindou.app.ui.GenState
@@ -65,6 +67,7 @@ import com.pindou.app.ui.shadcn.ShChip
 import com.pindou.app.ui.shadcn.TextButton
 import com.pindou.app.ui.theme.ClayColors
 import com.pindou.app.ui.theme.Spacing
+import kotlinx.coroutines.delay
 import kotlin.math.max
 import kotlin.math.min
 
@@ -77,9 +80,16 @@ fun ConstructionScreen(vm: AppViewModel) {
     val state = vm.construction ?: return
     // 施工时双手都在拼豆，别让屏幕因为无操作熄灭；离页立即摘掉，不影响其他页面
     val view = LocalView.current
-    DisposableEffect(vm.settings.keepScreenOn) {
-        view.keepScreenOn = vm.settings.keepScreenOn
+    val keepMode = vm.settings.keepScreenMode
+    DisposableEffect(keepMode) {
+        view.keepScreenOn = KeepScreenPolicy.shouldKeep(keepMode, 0L)
         onDispose { view.keepScreenOn = false }
+    }
+    // 限时模式到点自动放开，让系统正常熄屏；下次进页重新计时
+    LaunchedEffect(keepMode) {
+        val limitMinutes = KeepScreenPolicy.limitFor(keepMode) ?: return@LaunchedEffect
+        delay(limitMinutes * 60_000L)
+        view.keepScreenOn = false
     }
     val done = (vm.genState as? GenState.Done)?.result
     val pages = remember(done, vm.projectPages) {

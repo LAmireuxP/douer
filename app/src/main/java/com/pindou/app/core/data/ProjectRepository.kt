@@ -23,6 +23,7 @@ class ProjectRepository(private val context: Context) {
                 PindouDatabase.MIGRATION_1_2,
                 PindouDatabase.MIGRATION_2_3,
                 PindouDatabase.MIGRATION_3_4,
+                PindouDatabase.MIGRATION_4_5,
             )
             .build()
     }
@@ -128,6 +129,11 @@ class ProjectRepository(private val context: Context) {
             cursor,
             System.currentTimeMillis(),
         )
+    }
+
+    /** 施工时长累加（秒）；与进度分开调用，失败最多丢一次结算 */
+    suspend fun addBuildSeconds(id: Long, seconds: Long) = withContext(Dispatchers.IO) {
+        if (seconds > 0) dao.addBuildSeconds(id, seconds)
     }
 
     /** 收藏/取消收藏 */

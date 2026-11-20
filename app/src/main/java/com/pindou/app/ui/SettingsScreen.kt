@@ -48,6 +48,7 @@ import androidx.core.net.toUri
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pindou.app.core.display.RefreshRateController
+import com.pindou.app.core.build.KeepScreenPolicy
 import com.pindou.app.core.update.UpdateManifest
 import com.pindou.app.ui.motion.AnimatedNumber
 import com.pindou.app.ui.motion.shake
@@ -196,26 +197,25 @@ fun SettingsScreen(vm: AppViewModel) {
         // 施工
         ShCard(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(Spacing.md), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("施工页保持常亮", style = MaterialTheme.typography.titleLarge)
-                        Text(
-                            "拼豆时双手占用，屏幕不会因为无操作自动熄灭",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Text("施工页保持常亮", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "拼豆时双手占用；限时只算这一次进施工页，离开或到点自动恢复系统熄屏",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                // 分段单选：常亮 / 10 / 30 / 60 分钟 / 关
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                    KeepScreenPolicy.OPTIONS.forEach { mode ->
+                        ShChip(
+                            text = KeepScreenPolicy.label(mode),
+                            selected = settings.keepScreenMode == mode,
+                            onClick = {
+                                vm.viewModelScope.launch {
+                                    vm.settingsStore.setKeepScreenMode(mode)
+                                }
+                            },
                         )
                     }
-                    Switch(
-                        checked = settings.keepScreenOn,
-                        onCheckedChange = { enabled ->
-                            vm.viewModelScope.launch {
-                                vm.settingsStore.setKeepScreenOn(enabled)
-                            }
-                        },
-                    )
                 }
             }
         }

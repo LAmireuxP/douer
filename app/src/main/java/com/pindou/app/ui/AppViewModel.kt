@@ -16,6 +16,7 @@ import com.pindou.app.core.palette.BeadPalette
 import com.pindou.app.core.palette.PaletteAssets
 import com.pindou.app.core.build.ConstructionState
 import com.pindou.app.core.build.ConstructionResumePlan
+import com.pindou.app.core.build.BuildTimer
 import com.pindou.app.core.data.GridCodec
 import com.pindou.app.core.data.ProjectSummary
 import com.pindou.app.core.data.ProjectRepository
@@ -305,6 +306,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     // 施工模式
     var construction by mutableStateOf<ConstructionState?>(null)
+
+    /**
+     * 本次进入施工页的时间戳（毫秒）。只活在内存里：进程被杀就少记最后一段，
+     * 换来的是不用为每格操作开事务写时间。
+     */
+    private var constructionStartedAt = 0L
 
     // 多页图纸：编辑器内产生页；空列表 = 只有 genState 里的单页结果
     var projectPages: List<IntArray> = emptyList()
@@ -1542,11 +1549,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 cursor = resume.cursor,
             )
             screen = Screen.CONSTRUCTION
+            constructionStartedAt = System.currentTimeMillis()
         }
     }
 
     fun exitConstruction() {
         saveConstructionProgress()
+        constructionStartedAt = 0L
         construction = null
         screen = Screen.PREVIEW
     }
@@ -1555,9 +1564,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun saveConstructionProgress() {
         val id = currentProjectId ?: return
         val state = construction ?: return
+        settleBuildTime()
         viewModelScope.launch {
             repository.saveBuildProgress(id, state.done, state.orientation.ordinal, state.cursor)
         }
+    }
+
+    /**
+     * 结算一段施工时长：不足 1 秒不结算、也不动起点，连续点格的碎片时间会攒到下次一起记。
+     * 单次上限 2 小时（挂机忘退不当作拼豆时长）。
+     */
+    private fun settleBuildTime() {
+        val id = currentProjectId ?: return
+        val started = constructionStartedAt
+        if (started <= 0L) return
+        val now = System.currentTimeMillis()
+        val seconds = BuildTimer.settleSeconds(now - started)
+        if (seconds <= 0L) return
+        constructionStartedAt = now
+        viewModelScope.launch { repository.addBuildSeconds(id, seconds) }
     }
 
     // ---------- 编辑器子域 ----------

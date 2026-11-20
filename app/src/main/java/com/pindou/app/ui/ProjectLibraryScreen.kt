@@ -78,6 +78,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pindou.app.core.data.ProjectSummary
+import com.pindou.app.core.build.BuildTimer
 import com.pindou.app.ui.icon.MorphIcons
 import com.pindou.app.ui.motion.AnimatedNumber
 import com.pindou.app.ui.motion.LocalMotion
@@ -893,6 +894,7 @@ private fun ProjectCard(
                 buildString {
                     append("${project.width}×${project.height} · $paletteLabel")
                     if (project.album.isNotBlank()) append(" · ${project.album}")
+                    if (project.buildSeconds > 0) append(" · 已拼 ${BuildTimer.format(project.buildSeconds)}")
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1030,6 +1032,7 @@ private fun ProjectActionSheet(
                         buildString {
                             append("${project.width}×${project.height} · $paletteLabel")
                             append(" · ${project.pages} 页")
+                            if (project.buildSeconds > 0) append(" · 已拼 ${BuildTimer.format(project.buildSeconds)}")
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = ClayColors.Muted,
