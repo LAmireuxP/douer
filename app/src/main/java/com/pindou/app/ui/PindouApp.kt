@@ -29,6 +29,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
@@ -491,6 +494,9 @@ private fun GlassBottomBar(
 ) {
     val scope = rememberCoroutineScope()
     var barPressed by remember { mutableStateOf(false) }
+    // 手指按住底栏任意位置（含轻点 tab，不经过拖动阈值）时整条玻璃一起下压
+    var barTouched by remember { mutableStateOf(false) }
+    val pressedVisual = barTouched || barPressed
     // 底栏拖拽的"手指位移"（单位：页）。offsetFraction 在拖拽期间读不到时，
     // 靠它保证胶囊仍然跟手；松手吸附时归零。
     var dragVisual by remember { mutableFloatStateOf(0f) }
@@ -498,9 +504,14 @@ private fun GlassBottomBar(
     // 否则会被算成「1 + 拖动量」而多跳一页。
     var dragStartPage by remember { mutableIntStateOf(0) }
     val pillScale by animateFloatAsState(
-        targetValue = if (barPressed) 0.94f else 1f,
+        targetValue = if (pressedVisual) 0.86f else 1f,
         animationSpec = tween(Motion.FAST),
         label = "pillPress",
+    )
+    val barScale by animateFloatAsState(
+        targetValue = if (pressedVisual) 0.955f else 1f,
+        animationSpec = tween(Motion.FAST),
+        label = "barPress",
     )
     // 拖动经过 tab 时，子项的 clickable 也可能收到一次 up；
     // 用 250ms 时间闸门吞掉这次误点，正常轻点不受影响。
@@ -521,6 +532,23 @@ private fun GlassBottomBar(
             .widthIn(max = 372.dp)
             .fillMaxWidth()
             .height(64.dp)
+            // 整条玻璃按下时轻微收缩，和胶囊/图标的反馈叠加
+            .graphicsLayer {
+                scaleX = barScale
+                scaleY = barScale
+            }
+            // 只读触摸态：不消费事件，子项的 clickable 照常工作
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    barTouched = true
+                    try {
+                        waitForUpOrCancellation()
+                    } finally {
+                        barTouched = false
+                    }
+                }
+            }
             // 拖动底栏 = 拖动胶囊：pager 偏移跟手走，标题/页面同步移动；
             // 松手吸附到最近一页。和子项的 clickable 共存：没过 touch slop 的轻点仍是点 tab。
             .pointerInput(Unit) {
