@@ -814,11 +814,11 @@ private fun GlassBottomBar(
                         backdrop = backdrop,
                         shape = { RoundedCornerShape(48.dp) },
                         effects = {
-                            vibrancy()
-                            blur(10.dp.toPx())
+                            // 不加 vibrancy：会把液滴刷成实心白，失去玻璃感
+                            blur(12.dp.toPx())
                             lens(
-                                refractionHeight = 14.dp.toPx(),
-                                refractionAmount = 24.dp.toPx(),
+                                refractionHeight = 16.dp.toPx(),
+                                refractionAmount = 26.dp.toPx(),
                                 depthEffect = true,
                                 chromaticAberration = true,
                             )
@@ -850,7 +850,7 @@ private fun GlassBottomBar(
                             )
                         },
                         onDrawSurface = {
-                            drawRect(Color.White.copy(alpha = if (dark) 0.10f else 0.28f))
+                            drawRect(Color.White.copy(alpha = if (dark) 0.05f else 0.10f))
                         },
                     ),
             )
