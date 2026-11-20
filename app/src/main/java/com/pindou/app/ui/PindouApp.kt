@@ -504,17 +504,19 @@ private fun GlassBottomBar(
     // 拖拽起点页：pager 的 currentPage 会在半页处跳变，结算必须从起点算，
     // 否则会被算成「1 + 拖动量」而多跳一页。
     var dragStartPage by remember { mutableIntStateOf(0) }
-    val pillScale by animateFloatAsState(
-        targetValue = if (pressedVisual) 0.86f else 1f,
-        animationSpec = tween(Motion.FAST),
-        label = "pillPress",
-    )
-    // 按压层的淡入淡出：直接跳变会像闪烁，260ms 过渡更像"压下去"
-    val pressAlpha by animateFloatAsState(
-        targetValue = if (pressedVisual) 1f else 0f,
-        animationSpec = tween(Motion.FAST),
-        label = "barPressAlpha",
-    )
+    // 按压层：按下 90ms 淡入；松手至少留 140ms 再淡出，轻点也能看见一下
+    val press = remember { Animatable(0f) }
+    val pressAlpha = press.value
+    LaunchedEffect(pressedVisual) {
+        if (pressedVisual) {
+            press.animateTo(1f, tween(90))
+        } else {
+            delay(140)
+            press.animateTo(0f, tween(220))
+        }
+    }
+    // 手指在底栏里的 x（px）：没拖动时按压段跟手指，拖动时跟胶囊
+    var pressX by remember { mutableFloatStateOf(0f) }
     // 拖动经过 tab 时，子项的 clickable 也可能收到一次 up；
     // 用 250ms 时间闸门吞掉这次误点，正常轻点不受影响。
     val clickGate = remember { LongArray(1) }
@@ -537,7 +539,8 @@ private fun GlassBottomBar(
             // 只读触摸态：不消费事件，子项的 clickable 照常工作
             .pointerInput(Unit) {
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    pressX = down.position.x
                     barTouched = true
                     try {
                         waitForUpOrCancellation()
@@ -566,6 +569,7 @@ private fun GlassBottomBar(
                     },
                     onHorizontalDrag = { change, amount ->
                         drag += amount
+                        pressX = change.position.x
                         change.consume()
                         // 底栏一个槽宽 = 一页：手指走一格，页面正好走完一页，
                         // 胶囊（1:1 跟手）和页面才会同时到位；直接按 px 推会只走 1/3 页。
@@ -671,45 +675,67 @@ private fun GlassBottomBar(
                     (if (barPressed) 0f else pagerState.currentPageOffsetFraction)
                 )
                 .coerceIn(0f, (Tabs.size - 1).toFloat())
-            // 局部按压：光斑落在胶囊当前槽位，跟着拖动走；不缩整条，避免「整块玻璃被按住」
-            val pressCenterPx = with(LocalDensity.current) { (slot * pagePosition + slot / 2).toPx() }
-            val pressRadiusPx = with(LocalDensity.current) { slot.toPx() * 0.95f }
+            // 局部按压：中性压深（不是蓝色高亮），位置跟手指；拖动时跟胶囊
+            val pillCenterPx = with(LocalDensity.current) { (slot * pagePosition + slot / 2).toPx() }
+            val slotPx = with(LocalDensity.current) { slot.toPx() }
+            // 只有按在胶囊那一段时胶囊才缩小；按别的段只压深那一段
+            val pillSlotStartPx = slotPx * pagePosition
+            val pillScale by animateFloatAsState(
+                targetValue = if (
+                    barPressed ||
+                    (barTouched && pressX in pillSlotStartPx..(pillSlotStartPx + slotPx))
+                ) {
+                    0.86f
+                } else {
+                    1f
+                },
+                animationSpec = tween(Motion.FAST),
+                label = "pillPress",
+            )
             Canvas(Modifier.matchParentSize()) {
                 if (pressAlpha <= 0.01f) return@Canvas
-                val center = Offset(pressCenterPx, size.height / 2f)
-                val slotPx = pressRadiusPx / 0.95f
-                // 1) 受压段的底色：比整条略深的一截，边界是圆角，看起来像"按凹了一块"
-                val rectW = slotPx * 0.94f
-                val rectH = size.height - 6.dp.toPx()
+                val center = Offset(
+                    (if (barPressed) pillCenterPx else pressX)
+                        .coerceIn(slotPx * 0.6f, size.width - slotPx * 0.6f),
+                    size.height / 2f,
+                )
+                val rectW = slotPx * 0.98f
+                val rectH = size.height - 4.dp.toPx()
+                val shade = if (dark) Color.White else Color.Black
+                // 受压段压深：玻璃被按下去的感觉，不带主色，不会再出现蓝圈
                 drawRoundRect(
                     brush = Brush.verticalGradient(
                         listOf(
-                            accent.copy(alpha = (if (dark) 0.26f else 0.18f) * pressAlpha),
-                            accent.copy(alpha = (if (dark) 0.16f else 0.10f) * pressAlpha),
+                            shade.copy(alpha = (if (dark) 0.16f else 0.14f) * pressAlpha),
+                            shade.copy(alpha = (if (dark) 0.07f else 0.06f) * pressAlpha),
                         ),
                     ),
                     topLeft = Offset(center.x - rectW / 2f, (size.height - rectH) / 2f),
                     size = androidx.compose.ui.geometry.Size(rectW, rectH),
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(26.dp.toPx()),
                 )
-                // 2) 上缘一道内高光：玻璃被压时边缘折光会变亮
+                // 上缘内高光：让压深有边缘，不像一块灰补丁
                 drawRoundRect(
-                    color = Color.White.copy(alpha = 0.28f * pressAlpha),
+                    color = Color.White.copy(alpha = (if (dark) 0.18f else 0.35f) * pressAlpha),
                     topLeft = Offset(center.x - rectW / 2f, (size.height - rectH) / 2f),
-                    size = androidx.compose.ui.geometry.Size(rectW, 2.dp.toPx()),
+                    size = androidx.compose.ui.geometry.Size(rectW, 1.5.dp.toPx()),
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(26.dp.toPx()),
                 )
-                // 3) 中心光斑：范围比受压段大一圈，向两侧衰减
+                // 内缘一圈深色，收出"按凹"的边界
+                drawRoundRect(
+                    color = shade.copy(alpha = 0.10f * pressAlpha),
+                    topLeft = Offset(center.x - rectW / 2f, (size.height + rectH) / 2f - 1.dp.toPx()),
+                    size = androidx.compose.ui.geometry.Size(rectW, 1.dp.toPx()),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(26.dp.toPx()),
+                )
+                // 外圈柔和压深
                 drawCircle(
                     brush = Brush.radialGradient(
-                        colors = listOf(
-                            accent.copy(alpha = (if (dark) 0.30f else 0.22f) * pressAlpha),
-                            Color.Transparent,
-                        ),
+                        colors = listOf(shade.copy(alpha = 0.06f * pressAlpha), Color.Transparent),
                         center = center,
-                        radius = pressRadiusPx,
+                        radius = slotPx * 1.1f,
                     ),
-                    radius = pressRadiusPx,
+                    radius = slotPx * 1.1f,
                     center = center,
                 )
             }
