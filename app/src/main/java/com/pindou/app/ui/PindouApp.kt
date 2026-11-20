@@ -509,6 +509,12 @@ private fun GlassBottomBar(
         animationSpec = tween(Motion.FAST),
         label = "pillPress",
     )
+    // 按压层的淡入淡出：直接跳变会像闪烁，260ms 过渡更像"压下去"
+    val pressAlpha by animateFloatAsState(
+        targetValue = if (pressedVisual) 1f else 0f,
+        animationSpec = tween(Motion.FAST),
+        label = "barPressAlpha",
+    )
     // 拖动经过 tab 时，子项的 clickable 也可能收到一次 up；
     // 用 250ms 时间闸门吞掉这次误点，正常轻点不受影响。
     val clickGate = remember { LongArray(1) }
@@ -669,12 +675,35 @@ private fun GlassBottomBar(
             val pressCenterPx = with(LocalDensity.current) { (slot * pagePosition + slot / 2).toPx() }
             val pressRadiusPx = with(LocalDensity.current) { slot.toPx() * 0.95f }
             Canvas(Modifier.matchParentSize()) {
-                if (!pressedVisual) return@Canvas
+                if (pressAlpha <= 0.01f) return@Canvas
                 val center = Offset(pressCenterPx, size.height / 2f)
+                val slotPx = pressRadiusPx / 0.95f
+                // 1) 受压段的底色：比整条略深的一截，边界是圆角，看起来像"按凹了一块"
+                val rectW = slotPx * 0.94f
+                val rectH = size.height - 6.dp.toPx()
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        listOf(
+                            accent.copy(alpha = (if (dark) 0.26f else 0.18f) * pressAlpha),
+                            accent.copy(alpha = (if (dark) 0.16f else 0.10f) * pressAlpha),
+                        ),
+                    ),
+                    topLeft = Offset(center.x - rectW / 2f, (size.height - rectH) / 2f),
+                    size = androidx.compose.ui.geometry.Size(rectW, rectH),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(26.dp.toPx()),
+                )
+                // 2) 上缘一道内高光：玻璃被压时边缘折光会变亮
+                drawRoundRect(
+                    color = Color.White.copy(alpha = 0.28f * pressAlpha),
+                    topLeft = Offset(center.x - rectW / 2f, (size.height - rectH) / 2f),
+                    size = androidx.compose.ui.geometry.Size(rectW, 2.dp.toPx()),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(26.dp.toPx()),
+                )
+                // 3) 中心光斑：范围比受压段大一圈，向两侧衰减
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            accent.copy(alpha = if (dark) 0.20f else 0.14f),
+                            accent.copy(alpha = (if (dark) 0.30f else 0.22f) * pressAlpha),
                             Color.Transparent,
                         ),
                         center = center,
