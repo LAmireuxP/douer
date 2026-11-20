@@ -80,6 +80,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
@@ -508,11 +509,6 @@ private fun GlassBottomBar(
         animationSpec = tween(Motion.FAST),
         label = "pillPress",
     )
-    val barScale by animateFloatAsState(
-        targetValue = if (pressedVisual) 0.955f else 1f,
-        animationSpec = tween(Motion.FAST),
-        label = "barPress",
-    )
     // 拖动经过 tab 时，子项的 clickable 也可能收到一次 up；
     // 用 250ms 时间闸门吞掉这次误点，正常轻点不受影响。
     val clickGate = remember { LongArray(1) }
@@ -532,11 +528,6 @@ private fun GlassBottomBar(
             .widthIn(max = 372.dp)
             .fillMaxWidth()
             .height(64.dp)
-            // 整条玻璃按下时轻微收缩，和胶囊/图标的反馈叠加
-            .graphicsLayer {
-                scaleX = barScale
-                scaleY = barScale
-            }
             // 只读触摸态：不消费事件，子项的 clickable 照常工作
             .pointerInput(Unit) {
                 awaitEachGesture {
@@ -674,6 +665,25 @@ private fun GlassBottomBar(
                     (if (barPressed) 0f else pagerState.currentPageOffsetFraction)
                 )
                 .coerceIn(0f, (Tabs.size - 1).toFloat())
+            // 局部按压：光斑落在胶囊当前槽位，跟着拖动走；不缩整条，避免「整块玻璃被按住」
+            val pressCenterPx = with(LocalDensity.current) { (slot * pagePosition + slot / 2).toPx() }
+            val pressRadiusPx = with(LocalDensity.current) { slot.toPx() * 0.95f }
+            Canvas(Modifier.matchParentSize()) {
+                if (!pressedVisual) return@Canvas
+                val center = Offset(pressCenterPx, size.height / 2f)
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            accent.copy(alpha = if (dark) 0.20f else 0.14f),
+                            Color.Transparent,
+                        ),
+                        center = center,
+                        radius = pressRadiusPx,
+                    ),
+                    radius = pressRadiusPx,
+                    center = center,
+                )
+            }
             Box(
                 Modifier
                     .offset(x = slot * pagePosition)
