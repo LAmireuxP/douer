@@ -798,7 +798,7 @@ private fun GlassBottomBar(
 
         // 酷安式液滴：比底栏更高更大的折射玻璃珠，允许溢出底栏边界
         if (pressAlpha > 0.01f) {
-            val dropletWidthPx = dropletSlotPx * 1.22f
+            val dropletWidthPx = dropletSlotPx * 1.35f
             Box(
                 Modifier
                     .offset {
@@ -826,7 +826,7 @@ private fun GlassBottomBar(
                         highlight = {
                             Highlight(
                                 width = 1.2.dp,
-                                alpha = if (dark) 0.70f else 0.95f,
+                                alpha = if (dark) 0.60f else 0.85f,
                                 style = HighlightStyle.Default(
                                     intensity = 0.70f,
                                     angle = 45f,
@@ -838,7 +838,7 @@ private fun GlassBottomBar(
                             Shadow(
                                 radius = 16.dp,
                                 offset = DpOffset(0.dp, 8.dp),
-                                color = Color.Black.copy(alpha = if (dark) 0.35f else 0.16f),
+                                color = Color.Black.copy(alpha = if (dark) 0.30f else 0.10f),
                             )
                         },
                         innerShadow = {
@@ -850,7 +850,7 @@ private fun GlassBottomBar(
                             )
                         },
                         onDrawSurface = {
-                            drawRect(Color.White.copy(alpha = if (dark) 0.05f else 0.10f))
+                            drawRect(Color.White.copy(alpha = if (dark) 0.03f else 0.04f))
                         },
                     ),
             )
