@@ -10,6 +10,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import com.pindou.app.ui.motion.LocalMotion
@@ -99,6 +100,9 @@ private fun Palette.toDarkScheme() = darkColorScheme(
  * 直接落到目标色。只动画这一组高频 token，其余 30 多个 token 保持原样，
  * 避免一次主题切换把整棵树的重绘面铺得过大。
  */
+ /** 渐变主题的双色（已按明暗适配）；null = 纯色主题，背景走 colorScheme.background */
+ val LocalThemeGradient = staticCompositionLocalOf<List<Color>?> { null }
+
 @Composable
 private fun ColorScheme.withMotion(): ColorScheme {
     val motion = LocalMotion.current
@@ -136,10 +140,19 @@ fun PindouTheme(
     val baseScheme = if (darkTheme) palette.toDarkScheme() else palette.toLightScheme()
     val scheme = baseScheme.withMotion()
     val shapes = ClayShapesOf(appTheme.style)
+    // 渐变色彩在深色主题下与画布混合，避免整屏高亮刺眼；浅色直接用原双色
+    val gradientColors = appTheme.gradient?.let { (first, second) ->
+        if (darkTheme) {
+            listOf(lerp(first, palette.canvas, 0.72f), lerp(second, palette.canvas, 0.72f))
+        } else {
+            listOf(first, second)
+        }
+    }
 
     CompositionLocalProvider(
         LocalPalette provides palette,
         LocalShapeStyle provides appTheme.style,
+        LocalThemeGradient provides gradientColors,
     ) {
         MaterialTheme(
             colorScheme = scheme,

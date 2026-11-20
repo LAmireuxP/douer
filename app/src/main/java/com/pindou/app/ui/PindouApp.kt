@@ -3,6 +3,7 @@ package com.pindou.app.ui
 import com.pindou.app.ui.icon.MorphIcons
 import com.pindou.app.core.settings.GlassAppearance
 import com.pindou.app.ui.theme.ClayColors
+import com.pindou.app.ui.theme.LocalThemeGradient
 import android.os.Build
 import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -12,6 +13,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
@@ -66,6 +68,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -75,6 +78,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
@@ -103,6 +107,8 @@ import com.pindou.app.ui.motion.pressScale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 private data class Tab(
     val target: HomeTab,
@@ -262,6 +268,17 @@ fun PindouApp(vm: AppViewModel) {
         drawContent()
     }
 
+    // 渐变主题：整页背景用主题双色铺底，卡片仍是实色，避免全屏花
+    val themeGradient = LocalThemeGradient.current
+    val baseCanvas = MaterialTheme.colorScheme.background
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                themeGradient?.let { Brush.verticalGradient(it) }
+                    ?: Brush.verticalGradient(listOf(baseCanvas, baseCanvas)),
+            ),
+    ) {
     Scaffold(
         // 结果提示做成小药丸：默认的整条 Snackbar 又宽又高，会盖住底部工具条
         snackbarHost = {
@@ -315,7 +332,7 @@ fun PindouApp(vm: AppViewModel) {
                 }
             }
         },
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Color.Transparent,
     ) { innerPadding ->
         Box(Modifier.fillMaxSize()) {
             Box(
@@ -405,11 +422,11 @@ fun PindouApp(vm: AppViewModel) {
                     ],
                     pagerState = homePager,
                     onSelect = { tab -> goToHomePage(tab.ordinal) },
-                    onSwipe = { delta -> goToHomePage(homePager.currentPage + delta) },
                     modifier = Modifier,
                 )
             }
         }
+    }
     }
 }
 
@@ -465,10 +482,18 @@ private fun GlassBottomBar(
     current: HomeTab,
     pagerState: PagerState,
     onSelect: (HomeTab) -> Unit,
-    onSwipe: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val swipeNow by rememberUpdatedState(onSwipe)
+    val scope = rememberCoroutineScope()
+    var barPressed by remember { mutableStateOf(false) }
+    // 底栏拖拽的"手指位移"（单位：页）。offsetFraction 在拖拽期间读不到时，
+    // 靠它保证胶囊仍然跟手；松手吸附时归零。
+    var dragVisual by remember { mutableFloatStateOf(0f) }
+    val pillScale by animateFloatAsState(
+        targetValue = if (barPressed) 0.94f else 1f,
+        animationSpec = tween(Motion.FAST),
+        label = "pillPress",
+    )
     // 拖动经过 tab 时，子项的 clickable 也可能收到一次 up；
     // 用 250ms 时间闸门吞掉这次误点，正常轻点不受影响。
     val clickGate = remember { LongArray(1) }
@@ -488,30 +513,40 @@ private fun GlassBottomBar(
             .widthIn(max = 372.dp)
             .fillMaxWidth()
             .height(64.dp)
-            // 在底栏任意位置左右滑，按一格的阈值切上一页/下一页。
-            // 和子项的 clickable 共存：没过 touch slop 的轻点仍然是点 tab。
+            // 拖动底栏 = 拖动胶囊：pager 偏移跟手走，标题/页面同步移动；
+            // 松手吸附到最近一页。和子项的 clickable 共存：没过 touch slop 的轻点仍是点 tab。
             .pointerInput(Unit) {
                 var drag = 0f
                 detectHorizontalDragGestures(
-                    onDragStart = { drag = 0f },
-                    onDragCancel = { drag = 0f },
+                    onDragStart = {
+                        drag = 0f
+                        dragVisual = 0f
+                        barPressed = true
+                    },
+                    onDragCancel = {
+                        drag = 0f
+                        dragVisual = 0f
+                        barPressed = false
+                    },
                     onHorizontalDrag = { change, amount ->
                         drag += amount
                         change.consume()
+                        // 直接推进 pager 的原始偏移：胶囊与页面同一帧跟手，不等松手
+                        pagerState.dispatchRawDelta(amount)
+                        val slotPx = size.width.toFloat() / Tabs.size
+                        if (slotPx > 0f) dragVisual += amount / slotPx
                     },
                     onDragEnd = {
-                        val threshold = size.width / Tabs.size * 0.22f
-                        val swipe = when {
-                            // 底栏像滑片：向左拖 = 上一页，向右拖 = 下一页。
-                            drag <= -threshold -> -1
-                            drag >= threshold -> 1
-                            else -> 0
-                        }
-                        if (swipe != 0) {
-                            // 只在真的切页时落闸；未过阈值的小滑动不能吞掉下一拍点击。
+                        barPressed = false
+                        if (abs(drag) > 8f) {
+                            // 只在真的拖动时落闸；轻点不能吞掉下一拍点击
                             clickGate[0] = SystemClock.uptimeMillis() + 250L
-                            swipeNow(swipe)
                         }
+                        val target = (pagerState.currentPage + pagerState.currentPageOffsetFraction)
+                            .roundToInt()
+                            .coerceIn(0, Tabs.size - 1)
+                        scope.launch { pagerState.animateScrollToPage(target) }
+                        dragVisual = 0f
                         drag = 0f
                     },
                 )
@@ -583,19 +618,23 @@ private fun GlassBottomBar(
         ) {
             val slot = maxWidth / Tabs.size
             // 玻璃片直接跟 Pager 的 currentPage + offsetFraction 走。
-            // 在 offset 的 layout lambda 里读，滑动时只走布局/绘制，
-            // 不会每移动一像素就重组整条玻璃底栏。
+            // 在组合阶段读：layout lambda 里读 offsetFraction 在拖拽时不触发重排，
+            // 实测胶囊会停在旧页；这里宁可每帧重组这一个小条，也要跟手。
+            val pagePosition = (
+                pagerState.currentPage + pagerState.currentPageOffsetFraction + dragVisual
+                )
+                .coerceIn(0f, (Tabs.size - 1).toFloat())
             Box(
                 Modifier
-                    .offset {
-                        val pagePosition = (
-                            pagerState.currentPage + pagerState.currentPageOffsetFraction
-                            ).coerceIn(0f, (Tabs.size - 1).toFloat())
-                        IntOffset((slot * pagePosition).roundToPx(), 0)
-                    }
+                    .offset(x = slot * pagePosition)
                     .width(slot)
                     .fillMaxHeight()
                     .padding(horizontal = 3.dp)
+                    // 触摸/拖动时胶囊轻微下压，松手回弹
+                    .graphicsLayer {
+                        scaleX = pillScale
+                        scaleY = pillScale
+                    }
                     .drawBackdrop(
                         backdrop = backdrop,
                         shape = { RoundedCornerShape(26.dp) },
