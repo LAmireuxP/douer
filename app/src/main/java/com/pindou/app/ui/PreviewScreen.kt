@@ -30,7 +30,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -39,6 +43,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
@@ -50,6 +57,8 @@ import com.pindou.app.core.pattern.AutoTuner
 import com.pindou.app.core.pattern.AutoTuneDelta
 import com.pindou.app.core.pattern.CodeLabelMode
 import com.pindou.app.ui.motion.AnimatedNumber
+import com.pindou.app.ui.motion.LocalMotion
+import com.pindou.app.ui.motion.shimmer
 import com.pindou.app.ui.shadcn.Button
 import com.pindou.app.ui.shadcn.OutlinedButton
 import com.pindou.app.ui.shadcn.ShCard
@@ -94,6 +103,19 @@ private fun PreviewContent(vm: AppViewModel, done: GenState.Done) {
     var simplifiedLabels by remember { mutableStateOf(true) }
     var fullscreen by remember { mutableStateOf(false) }
     var splitCompare by remember { mutableStateOf(false) }
+    val motion = LocalMotion.current
+    // V3 生成完成动效：同一版结果只扫一次；返回再进来不重播
+    val reveal = remember(result) { Animatable(0f) }
+    LaunchedEffect(result, motion.enabled) {
+        if (!motion.enabled || vm.revealPlayedFor === result) {
+            reveal.snapTo(1f)
+            return@LaunchedEffect
+        }
+        vm.revealPlayedFor = result
+        reveal.snapTo(0f)
+        reveal.animateTo(1f, tween(durationMillis = 460, easing = FastOutSlowInEasing))
+    }
+    val revealMask = MaterialTheme.colorScheme.surface
     val codeLabels = if (simplifiedLabels) CodeLabelMode.OUTLINE else CodeLabelMode.FULL
     val pages = remember(result, selected, vm.projectPages) {
         if (selected != null) listOf(result) else vm.currentPages().ifEmpty { listOf(result) }
@@ -262,7 +284,26 @@ private fun PreviewContent(vm: AppViewModel, done: GenState.Done) {
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .aspectRatio(result.width.toFloat() / result.height.toFloat()),
+                        .aspectRatio(result.width.toFloat() / result.height.toFloat())
+                        // 波前从左上扫到右下：只改绘制、不改布局，相位在 draw 阶段读
+                        .drawWithContent {
+                            drawContent()
+                            val progress = reveal.value
+                            if (progress < 1f) {
+                                val tail = (progress - 0.20f).coerceIn(0f, 0.99f)
+                                val head = (progress + 0.02f).coerceIn(tail, 1f)
+                                drawRect(
+                                    Brush.linearGradient(
+                                        0f to revealMask,
+                                        tail to revealMask,
+                                        head to Color.Transparent,
+                                        1f to Color.Transparent,
+                                        start = Offset.Zero,
+                                        end = Offset(size.width, size.height),
+                                    ),
+                                )
+                            }
+                        },
                 ) {
                     PatternCanvas(
                         result = currentPage,
@@ -509,11 +550,13 @@ private fun PreviewContent(vm: AppViewModel, done: GenState.Done) {
                     onClick = { ExportService.shareList(context, pages, projectName) },
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("分享清单文本") }
-                exportMsg?.let {
+                exportMsg?.let { message ->
                     Text(
-                        it,
+                        message,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        // 导出 PDF/PNG 要几秒：等待期间文字有流光，完成即停
+                        modifier = if (message.startsWith("正在导出")) Modifier.shimmer() else Modifier,
                     )
                 }
             }

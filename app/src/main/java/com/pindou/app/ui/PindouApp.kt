@@ -10,14 +10,21 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.pager.HorizontalPager
@@ -66,6 +73,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -316,23 +324,54 @@ fun PindouApp(vm: AppViewModel) {
                     .layerBackdrop(backdrop),
             ) {
                 Box(Modifier.padding(innerPadding)) {
-                    when (vm.screen) {
-                        Screen.HOME -> HomeScreen(
-                            vm,
-                            pagerState = homePager,
-                            onPickImage = ::pickImage,
-                            onPickPixel = ::pickPixelImage,
-                            onPickBpat = ::pickBpat,
-                            onPickChart = ::pickChart,
-                        )
-                        Screen.CROP -> CropScreen(vm)
-                        Screen.PARAMS -> ParamsScreen(vm)
-                        Screen.PREVIEW -> PreviewScreen(vm)
-                        Screen.EDITOR -> com.pindou.app.ui.editor.EditorScreen(vm)
-                        Screen.STUDIO -> com.pindou.app.ui.studio.StudioScreen(vm)
-                        Screen.CONSTRUCTION -> com.pindou.app.ui.build.ConstructionScreen(vm)
-                        Screen.CHART_CALIBRATE -> ChartCalibrateScreen(vm)
-                        Screen.PIXEL_CALIBRATE -> PixelCalibrateScreen(vm)
+                    // 转场方向由 ScreenOrder 的层级差决定，调用点不用手写方向；
+                    // 「移除动画」时退化成硬切（snap），不动任何布局
+                    AnimatedContent(
+                        targetState = vm.screen,
+                        transitionSpec = {
+                            if (!appMotion.enabled) {
+                                (fadeIn(tween(0)) togetherWith fadeOut(tween(0)))
+                                    .using(SizeTransform(clip = false))
+                            } else if (ScreenOrder.isForward(initialState, targetState)) {
+                                (
+                                    slideInHorizontally(tween(Motion.EMPHASIS)) { it } +
+                                        fadeIn(tween(Motion.BASE))
+                                    ) togetherWith (
+                                    slideOutHorizontally(tween(Motion.EMPHASIS)) { -it / 3 } +
+                                        scaleOut(tween(Motion.EMPHASIS), targetScale = 0.86f) +
+                                        fadeOut(tween(Motion.BASE))
+                                    ) using SizeTransform(clip = false)
+                            } else {
+                                (
+                                    slideInHorizontally(tween(Motion.EMPHASIS)) { -it / 3 } +
+                                        fadeIn(tween(Motion.BASE))
+                                    ) togetherWith (
+                                    slideOutHorizontally(tween(Motion.EMPHASIS)) { it } +
+                                        scaleOut(tween(Motion.EMPHASIS), targetScale = 0.86f) +
+                                        fadeOut(tween(Motion.BASE))
+                                    ) using SizeTransform(clip = false)
+                            }
+                        },
+                        label = "screenTransition",
+                    ) { screen ->
+                        when (screen) {
+                            Screen.HOME -> HomeScreen(
+                                vm,
+                                pagerState = homePager,
+                                onPickImage = ::pickImage,
+                                onPickPixel = ::pickPixelImage,
+                                onPickBpat = ::pickBpat,
+                                onPickChart = ::pickChart,
+                            )
+                            Screen.CROP -> CropScreen(vm)
+                            Screen.PARAMS -> ParamsScreen(vm)
+                            Screen.PREVIEW -> PreviewScreen(vm)
+                            Screen.EDITOR -> com.pindou.app.ui.editor.EditorScreen(vm)
+                            Screen.STUDIO -> com.pindou.app.ui.studio.StudioScreen(vm)
+                            Screen.CONSTRUCTION -> com.pindou.app.ui.build.ConstructionScreen(vm)
+                            Screen.CHART_CALIBRATE -> ChartCalibrateScreen(vm)
+                            Screen.PIXEL_CALIBRATE -> PixelCalibrateScreen(vm)
+                        }
                     }
                 }
             }
@@ -434,6 +473,7 @@ private fun GlassBottomBar(
     // 用 250ms 时间闸门吞掉这次误点，正常轻点不受影响。
     val clickGate = remember { LongArray(1) }
     val shape = RoundedCornerShape(glass.cornerDp.dp)
+    val motion = LocalMotion.current
     val dark = MaterialTheme.colorScheme.surface.luminance() < 0.35f
     val accent = MaterialTheme.colorScheme.primary
     val selectedInk = if (dark) Color.White else ClayColors.PrimaryInk
@@ -599,7 +639,43 @@ private fun GlassBottomBar(
                             )
                         },
                     ),
-            )
+            ) {
+                // V4 呼吸感：选中胶囊每 6 秒掠过一次光泽，180ms、alpha ≤ 8%。
+                // 只在静止时跑；拖 pager / 关闭动画时不启动，避免廉价感。
+                val breath = remember { Animatable(0f) }
+                LaunchedEffect(motion.enabled, pagerState.isScrollInProgress) {
+                    if (!motion.enabled) {
+                        breath.snapTo(0f)
+                        return@LaunchedEffect
+                    }
+                    while (true) {
+                        delay(6000)
+                        if (!pagerState.isScrollInProgress) {
+                            breath.animateTo(1f, tween(180, easing = LinearEasing))
+                            breath.snapTo(0f)
+                        }
+                    }
+                }
+                Canvas(
+                    Modifier
+                        .matchParentSize()
+                        .clip(RoundedCornerShape(26.dp)),
+                ) {
+                    val progress = breath.value
+                    if (progress <= 0f) return@Canvas
+                    val bandW = size.width * 0.40f
+                    val x = -bandW + (size.width + bandW * 2f) * progress
+                    drawRect(
+                        Brush.linearGradient(
+                            0f to Color.Transparent,
+                            0.5f to accent.copy(alpha = if (dark) 0.10f else 0.08f),
+                            1f to Color.Transparent,
+                            start = Offset(x, 0f),
+                            end = Offset(x + bandW, size.height * 0.7f),
+                        ),
+                    )
+                }
+            }
 
             Row(
                 modifier = Modifier.fillMaxSize(),

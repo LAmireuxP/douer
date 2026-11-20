@@ -300,6 +300,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             generationController.state = value
         }
 
+    /**
+     * 生成完成动效只播一次：记录已经扫过的那版结果。
+     * 从预览页进编辑器再回来、或翻页回来，同一份 result 不再重播。
+     */
+    var revealPlayedFor: PatternResult? = null
+
     val autoTuneInfo: String? get() = generationController.autoTuneInfo
     val autoTuneScores: List<Pair<String, Int>> get() = generationController.autoTuneScores
     val autoTuneRunning: Boolean get() = generationController.autoTuneRunning

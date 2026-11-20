@@ -79,6 +79,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pindou.app.core.data.ProjectSummary
 import com.pindou.app.core.build.BuildTimer
+import com.pindou.app.ui.motion.shimmer
 import com.pindou.app.ui.icon.MorphIcons
 import com.pindou.app.ui.motion.AnimatedNumber
 import com.pindou.app.ui.motion.LocalMotion
@@ -1195,7 +1196,12 @@ private fun ProjectThumb(project: ProjectSummary, size: Int) {
                 contentScale = ContentScale.Fit,
             )
         } else {
-            BeadDot(ClayColors.BrandMint)
+            // 缩略图解码期间用流光占位：比白底更像「正在浮出」
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .shimmer(),
+            )
         }
     }
 }
