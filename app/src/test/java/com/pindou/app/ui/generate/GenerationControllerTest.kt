@@ -262,4 +262,15 @@ class GenerationControllerTest {
         assertFalse(gen.autoTuneRunning)
         assertTrue(gen.state is GenState.Done)
     }
+
+    @Test
+    fun `自动优选把全部候选带进 Done`() {
+        val gen = controller(textHost())
+
+        gen.autoTune()
+
+        val done = gen.state as GenState.Done
+        assertTrue("自动优选后应保留候选供预览页轮播", done.alternatives.isNotEmpty())
+        assertEquals(done.alternatives.maxOf { it.score }, done.result.quality.score)
+    }
 }

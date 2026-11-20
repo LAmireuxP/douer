@@ -193,6 +193,33 @@ fun SettingsScreen(vm: AppViewModel) {
             }
         }
 
+        // 施工
+        ShCard(modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(Spacing.md), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("施工页保持常亮", style = MaterialTheme.typography.titleLarge)
+                        Text(
+                            "拼豆时双手占用，屏幕不会因为无操作自动熄灭",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = settings.keepScreenOn,
+                        onCheckedChange = { enabled ->
+                            vm.viewModelScope.launch {
+                                vm.settingsStore.setKeepScreenOn(enabled)
+                            }
+                        },
+                    )
+                }
+            }
+        }
+
         // AI 实验
         ShCard(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(Spacing.md), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {

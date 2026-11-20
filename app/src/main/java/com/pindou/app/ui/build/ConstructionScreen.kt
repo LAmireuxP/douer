@@ -28,8 +28,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -47,6 +49,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
@@ -72,6 +75,12 @@ import kotlin.math.min
 @Composable
 fun ConstructionScreen(vm: AppViewModel) {
     val state = vm.construction ?: return
+    // 施工时双手都在拼豆，别让屏幕因为无操作熄灭；离页立即摘掉，不影响其他页面
+    val view = LocalView.current
+    DisposableEffect(vm.settings.keepScreenOn) {
+        view.keepScreenOn = vm.settings.keepScreenOn
+        onDispose { view.keepScreenOn = false }
+    }
     val done = (vm.genState as? GenState.Done)?.result
     val pages = remember(done, vm.projectPages) {
         vm.currentPages().ifEmpty { done?.let { listOf(it) } ?: emptyList() }
@@ -436,6 +445,51 @@ fun ConstructionScreen(vm: AppViewModel) {
                     OutlinedButton(onClick = { jumpToNext() }) { Text(jumpLabel) }
                     Button(onClick = { completeCurrent() }) { Text(bulkLabel) }
                 }
+            }
+
+            // 常驻「下一步」：新手不用自己找该拼哪；文案随 tick / 方向 / 换页刷新
+            val nextStepText = when (state.orientation) {
+                ConstructionState.Orientation.ROW -> {
+                    val next = state.nextIncompleteRow()
+                    if (next < 0) "全部拼完 · 可以收工了"
+                    else "下一步：第 ${next + 1} 行 · 从左往右"
+                }
+                ConstructionState.Orientation.COLUMN -> {
+                    val next = state.nextIncompleteCol()
+                    if (next < 0) "全部拼完 · 可以收工了"
+                    else "下一步：第 ${next + 1} 列 · 从上往下"
+                }
+                ConstructionState.Orientation.COLOR -> {
+                    val next = ConstructionColorGuide.nextIncomplete(
+                        colorOrder, colorRemaining, activeColor,
+                    )
+                    if (next < 0) "全部拼完 · 可以收工了"
+                    else {
+                        val code = codeList?.getOrNull(next) ?: "—"
+                        "下一步：$code · 剩 ${colorRemaining[next] ?: 0} 颗"
+                    }
+                }
+                ConstructionState.Orientation.BOARD -> {
+                    val next = state.nextIncompleteBoardCircular(state.cursor + 1)
+                        .takeIf { it >= 0 } ?: state.nextIncompleteBoard()
+                    if (next < 0) "全部拼完 · 可以收工了"
+                    else "下一步：第 ${next + 1}/${state.boardCount} 块底板"
+                }
+            }
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = Spacing.xs),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                contentColor = MaterialTheme.colorScheme.primary,
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Text(
+                    nextStepText,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                    maxLines = 1,
+                )
             }
         }
     }

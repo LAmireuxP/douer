@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,11 +45,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.pindou.app.core.export.ExportService
+import com.pindou.app.core.pattern.AutoTuner
 import com.pindou.app.core.pattern.CodeLabelMode
 import com.pindou.app.ui.motion.AnimatedNumber
 import com.pindou.app.ui.shadcn.Button
 import com.pindou.app.ui.shadcn.OutlinedButton
 import com.pindou.app.ui.shadcn.ShCard
+import com.pindou.app.ui.shadcn.ShChip
 import com.pindou.app.ui.shadcn.SectionTitle
 import com.pindou.app.ui.shadcn.TextButton
 import com.pindou.app.ui.theme.Spacing
@@ -59,7 +62,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun PreviewScreen(vm: AppViewModel) {
     when (val s = vm.genState) {
-        is GenState.Done -> PreviewContent(vm, s.result)
+        is GenState.Done -> PreviewContent(vm, s)
         else -> Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -76,12 +79,22 @@ fun PreviewScreen(vm: AppViewModel) {
 }
 
 @Composable
-private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern.PatternResult) {
+private fun PreviewContent(vm: AppViewModel, done: GenState.Done) {
+    val alternatives = done.alternatives
+    val levelBests = remember(alternatives) { AutoTuner.bestPerLevel(alternatives) }
+    val appliedIndex = remember(done) {
+        alternatives.indexOfFirst { it.result === done.result }
+    }
+    var selectedAlt by remember(done) { mutableIntStateOf(appliedIndex) }
+    val selected = alternatives.getOrNull(selectedAlt)
+    val result = selected?.result ?: done.result
     var showCodes by remember { mutableStateOf(true) }
     var simplifiedLabels by remember { mutableStateOf(true) }
     var fullscreen by remember { mutableStateOf(false) }
     val codeLabels = if (simplifiedLabels) CodeLabelMode.OUTLINE else CodeLabelMode.FULL
-    val pages = remember(result, vm.projectPages) { vm.currentPages().ifEmpty { listOf(result) } }
+    val pages = remember(result, selected, vm.projectPages) {
+        if (selected != null) listOf(result) else vm.currentPages().ifEmpty { listOf(result) }
+    }
     var pageIdx by remember(pages) { mutableIntStateOf(0) }
     val currentPage = pages[pageIdx.coerceIn(0, pages.size - 1)]
     val usage = remember(pages) {
@@ -172,6 +185,38 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
                 onCheckedChange = { showCodes = it },
                 modifier = Modifier.padding(start = 6.dp),
             )
+        }
+
+        // 自动优选的档位轮播：切换只改预览；点「应用这版」才写回参数与项目
+        if (levelBests.size > 1) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.md),
+                verticalArrangement = Arrangement.spacedBy(Spacing.xs),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+                ) {
+                    levelBests.forEach { candidate ->
+                        val index = alternatives.indexOfFirst { it === candidate }
+                        ShChip(
+                            text = "${candidate.filterLevel.label} ${candidate.score}",
+                            selected = selectedAlt == index,
+                            onClick = { selectedAlt = index },
+                        )
+                    }
+                }
+                if (selected != null && selected.result !== done.result) {
+                    Button(
+                        onClick = { vm.applyAutoTuneAlternative(selectedAlt) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("应用这版参数") }
+                }
+            }
         }
 
         // 图纸不套卡片、不留左右边距：整张纸铺满屏宽，长宽比保持
@@ -435,6 +480,14 @@ private fun PreviewContent(vm: AppViewModel, result: com.pindou.app.core.pattern
                     ) { Text("CSV 清单") }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                    if (vm.originalPixels != null) {
+                        OutlinedButton(
+                            onClick = {
+                                runExport("前后对比") { vm.exportComparison(result) }
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("前后对比") }
+                    }
                     TextButton(
                         onClick = { ExportService.shareList(context, pages, projectName) },
                         modifier = Modifier.weight(1f),

@@ -186,7 +186,8 @@ class GenerationController(
                 autoTuneInfo = "自动优选：${best.filterLevel.label} · " +
                     (best.maxColors?.let { "$it 色" } ?: "不限色") + " · " + qualityText +
                     if (gain > 0) " · 比原参数高 $gain 分" else ""
-                state = GenState.Done(best.result)
+                // 保留全部候选：预览页可以切档查看，点「应用这版」才写回
+                state = GenState.Done(best.result, outcome.all)
                 host.saveAfterGenerate(best.result)
             } catch (e: CancellationException) {
                 throw e

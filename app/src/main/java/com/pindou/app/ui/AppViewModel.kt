@@ -24,6 +24,7 @@ import com.pindou.app.core.editor.EditorEngine
 import com.pindou.app.core.editor.ColorReplaceOps
 import com.pindou.app.core.editor.ShapeTool
 import com.pindou.app.core.editor.SymmetryMode
+import com.pindou.app.core.export.ExportService
 import com.pindou.app.core.image.CropRect
 import com.pindou.app.core.image.ImageTransforms
 import com.pindou.app.core.chart.ChartRecognizer
@@ -780,6 +781,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             previewReturnTab = null
             screen = Screen.PREVIEW
         }
+    }
+
+    /**
+     * 应用自动优选的某一档：写回参数、切换当前结果并落库。
+     * 预览页只改显示，点「应用这版参数」才走到这里。
+     */
+    fun applyAutoTuneAlternative(index: Int) {
+        val done = genState as? GenState.Done ?: return
+        val alt = done.alternatives.getOrNull(index) ?: return
+        filterLevel = alt.filterLevel
+        if (alt.maxColors != null) {
+            limitColors = true
+            maxColors = alt.maxColors
+        } else {
+            limitColors = false
+        }
+        projectPages = listOf(alt.result.cells.copyOf())
+        genState = GenState.Done(alt.result, done.alternatives)
+        viewModelScope.launch { saveAfterGenerate(alt.result) }
     }
 
     fun backToHome() {
@@ -1646,6 +1666,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     ): List<ColorReplaceOps.Move> = editorController.replaceSimilar(from, to, maxDeltaE)
 
     // ---------- .bpat 导入导出 ----------
+
+    /** 前后对比导出：原图取 originalPixels，图纸取当前预览结果（可能是优选候选） */
+    fun exportComparison(result: PatternResult): ExportService.Exported? {
+        val pixels = originalPixels ?: return null
+        if (originalW <= 0 || originalH <= 0) return null
+        return ExportService.exportComparison(
+            getApplication(), pixels, originalW, originalH, result, displayName(),
+        )
+    }
 
     /** 导出当前图纸为 .bpat（含全部页） */
     fun exportBpatFile() {

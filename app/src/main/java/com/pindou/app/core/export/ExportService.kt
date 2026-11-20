@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import android.net.Uri
@@ -164,6 +165,137 @@ object ExportService {
         result: PatternResult,
         projectName: String,
     ): Exported = exportCsv(context, listOf(result), projectName)
+
+    /**
+     * 前后对比长图：左原图、右图纸，顶部项目名/还原度，底部尺寸与色数。
+     *
+     * 给用户晒图用——「还原度 92」需要一张能直接发出去的视觉证据，
+     * 而不是两串数字。
+     */
+    fun exportComparison(
+        context: Context,
+        originalPixels: IntArray,
+        originalW: Int,
+        originalH: Int,
+        result: PatternResult,
+        projectName: String,
+    ): Exported = runCatching {
+        require(originalW > 0 && originalH > 0) { "原图尺寸无效" }
+        require(originalPixels.size == originalW * originalH) { "原图像素数与尺寸不符" }
+
+        val pad = 32
+        val gap = 24
+        val header = 72
+        val panelW = 720
+        val panelH = 720
+        val footer = 92
+        val width = pad * 2 + panelW * 2 + gap
+        val height = pad + header + panelH + footer
+        val out = createBitmap(width, height)
+        val canvas = Canvas(out)
+        canvas.drawColor(0xFFF7F7F5.toInt())
+
+        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF111111.toInt()
+            textSize = 34f
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        }
+        val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF6B6B6B.toInt()
+            textSize = 24f
+        }
+        val footPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF333333.toInt()
+            textSize = 26f
+        }
+        val panelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() }
+        val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFE2E2E2.toInt()
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+        }
+        val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+
+        canvas.drawText(
+            projectName.ifBlank { "图纸" },
+            pad.toFloat(),
+            (pad + 40).toFloat(),
+            titlePaint,
+        )
+        val scoreText = "还原度 ${if (result.quality.score > 0) result.quality.score else "—"}"
+        canvas.drawText(
+            scoreText,
+            (width - pad - titlePaint.measureText(scoreText)),
+            (pad + 40).toFloat(),
+            titlePaint,
+        )
+
+        val panelTop = pad + header
+        val leftPanel = pad.toFloat()
+        val rightPanel = (pad + panelW + gap).toFloat()
+        canvas.drawText("原图", leftPanel + 16f, (panelTop - 10).toFloat(), labelPaint)
+        canvas.drawText("图纸", rightPanel + 16f, (panelTop - 10).toFloat(), labelPaint)
+        listOf(leftPanel, rightPanel).forEach { x ->
+            val rect = RectF(x, panelTop.toFloat(), x + panelW, (panelTop + panelH).toFloat())
+            canvas.drawRoundRect(rect, 16f, 16f, panelPaint)
+            canvas.drawRoundRect(rect, 16f, 16f, borderPaint)
+        }
+
+        val original = Bitmap.createBitmap(
+            originalPixels, originalW, originalH, Bitmap.Config.ARGB_8888,
+        )
+        val leftFit = ComparisonLayout.fit(originalW, originalH, panelW - 32f, panelH - 32f)
+        canvas.drawBitmap(
+            original,
+            null,
+            RectF(
+                leftPanel + 16f + leftFit.left,
+                panelTop + 16f + leftFit.top,
+                leftPanel + 16f + leftFit.left + leftFit.width,
+                panelTop + 16f + leftFit.top + leftFit.height,
+            ),
+            bitmapPaint,
+        )
+        original.recycle()
+
+        val cell = (panelW / maxOf(result.width, result.height)).coerceAtLeast(2)
+        val rendered = ExportRenderer.renderPattern(
+            result,
+            ExportRenderer.RenderOptions(
+                cellPx = cell,
+                showCodes = false,
+                showGrid = false,
+                showRuler = false,
+            ),
+        ).toBitmap()
+        val rightFit = ComparisonLayout.fit(rendered.width, rendered.height, panelW - 32f, panelH - 32f)
+        canvas.drawBitmap(
+            rendered,
+            null,
+            RectF(
+                rightPanel + 16f + rightFit.left,
+                panelTop + 16f + rightFit.top,
+                rightPanel + 16f + rightFit.left + rightFit.width,
+                panelTop + 16f + rightFit.top + rightFit.height,
+            ),
+            bitmapPaint,
+        )
+        rendered.recycle()
+
+        val summary = "${result.width}×${result.height} · ${result.quality.colorCount} 色" +
+            " · 平均色差 ${String.format(java.util.Locale.US, "%.1f", result.quality.meanDeltaE)}"
+        canvas.drawText(
+            summary,
+            pad.toFloat(),
+            (panelTop + panelH + 52).toFloat(),
+            footPaint,
+        )
+
+        val name = "拼豆_${result.width}x${result.height}_compare${System.currentTimeMillis() / 1000}.png"
+        val uri = saveToDownloads(context, out, name, "image/png")
+        out.recycle()
+        Exported.FileReady(File(name), uri)
+    }.getOrElse { Exported.Failed(it.message ?: "前后对比导出失败") }
 
     /**
      * 画像素工作区的位图导出入口：调用方已经按最终分辨率渲染好，

@@ -2,6 +2,7 @@ package com.pindou.app.ui
 
 import android.graphics.Bitmap
 import com.pindou.app.core.image.CropRect
+import com.pindou.app.core.pattern.AutoTuner
 import com.pindou.app.core.pattern.GenerationStage
 import com.pindou.app.core.pattern.PatternResult
 
@@ -36,7 +37,14 @@ enum class CropAspectMode { FREE, SQUARE }
 sealed interface GenState {
     data object Idle : GenState
     data class Running(val stage: GenerationStage, val progress: Float) : GenState
-    data class Done(val result: PatternResult) : GenState
+    /**
+     * [alternatives] 只在自动优选后非空：预览页用它做档位轮播，
+     * 切换只改显示，点「应用这版」才写回参数与项目。
+     */
+    data class Done(
+        val result: PatternResult,
+        val alternatives: List<AutoTuner.Candidate> = emptyList(),
+    ) : GenState
     data class Error(val message: String) : GenState
 }
 

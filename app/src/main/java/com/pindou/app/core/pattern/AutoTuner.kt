@@ -76,4 +76,17 @@ object AutoTuner {
      */
     fun defaultColorOptions(base: GeneratorOptions): List<Int?> =
         if (base.maxColors != null) listOf(base.maxColors) else listOf(null, 20, 30)
+
+    /**
+     * 每个过滤档只留分最高的一版，供预览页档位 chips 使用。
+     * 同分仍按「色多优先」，与 [sweep] 选 best 的口径一致。
+     */
+    fun bestPerLevel(all: List<Candidate>): List<Candidate> =
+        FilterLevel.entries.mapNotNull { level ->
+            all.filter { it.filterLevel == level }
+                .maxWithOrNull(
+                    compareBy<Candidate> { it.score }
+                        .thenBy { it.result.quality.colorCount },
+                )
+        }
 }

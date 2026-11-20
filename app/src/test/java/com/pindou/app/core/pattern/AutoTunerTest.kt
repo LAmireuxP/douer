@@ -66,4 +66,26 @@ class AutoTunerTest {
         assertTrue(r.quality.colorCount in 1..2)
         assertTrue("双色图平均色差应很小，实际 ${r.quality.meanDeltaE}", r.quality.meanDeltaE < 6.0)
     }
+
+    @Test
+    fun `每档只留分最高的一版且同分取色多`() {
+        fun result(score: Int, colors: Int) = PatternResult(
+            1, 1, IntArray(1), palette(0xFF000000.toInt()), 0,
+            QualityReport(score, 0.0, 0.0, colors, 0.0, 0.0, 0.0),
+        )
+        val all = listOf(
+            AutoTuner.Candidate(FilterLevel.LOW, null, result(80, 4)),
+            AutoTuner.Candidate(FilterLevel.LOW, 20, result(85, 2)),
+            AutoTuner.Candidate(FilterLevel.LOW, 30, result(85, 6)),
+            AutoTuner.Candidate(FilterLevel.HIGH, null, result(90, 3)),
+        )
+
+        val best = AutoTuner.bestPerLevel(all)
+
+        assertEquals(2, best.size)
+        assertEquals(FilterLevel.LOW, best[0].filterLevel)
+        // 同分 85 时取色多的一版（6 色），与 sweep 选 best 的口径一致
+        assertEquals(6, best[0].result.quality.colorCount)
+        assertEquals(FilterLevel.HIGH, best[1].filterLevel)
+    }
 }
