@@ -225,7 +225,7 @@ fun StudioCanvasPanel(
                         CanvasAction("↓ 1", Modifier.weight(1f)) { session.act { it.shift(0, 1) } }
                     }
                 }
-                SheetSection(title = "对称绘制", hint = "画一格会同时落镜像格，适合脸、花纹") {
+                SheetSection(title = "对称绘制", hint = "画一格同时落镜像 / 旋转格；旋转适合曼陀罗、雪花") {
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp),

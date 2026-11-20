@@ -47,6 +47,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -55,6 +57,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -75,9 +78,13 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pindou.app.core.data.ProjectSummary
+import com.pindou.app.core.data.ProjectEntity
+import com.pindou.app.core.data.ProjectStats
 import com.pindou.app.core.build.BuildTimer
 import com.pindou.app.ui.motion.shimmer
 import com.pindou.app.ui.icon.MorphIcons
@@ -130,6 +137,10 @@ fun ProjectLibraryScreen(
     var actionTarget by remember { mutableStateOf<ProjectSummary?>(null) }
     var batchDeleteOpen by remember { mutableStateOf(false) }
     var batchAlbumOpen by remember { mutableStateOf(false) }
+    var compareIds by remember { mutableStateOf<Pair<Long, Long>?>(null) }
+    var comparePair by remember {
+        mutableStateOf<Pair<ProjectEntity, ProjectEntity>?>(null)
+    }
 
     val selecting = vm.librarySelecting
     var selectedIds by rememberSaveable(stateSaver = SelectionSaver) {
@@ -141,6 +152,20 @@ fun ProjectLibraryScreen(
         selectedIds = emptySet()
         batchDeleteOpen = false
         batchAlbumOpen = false
+        compareIds = null
+        comparePair = null
+    }
+
+    // 对比页要完整实体（cells / doneCells）：选中两张后再读库，不在列表阶段预取
+    LaunchedEffect(compareIds) {
+        val ids = compareIds
+        if (ids == null) {
+            comparePair = null
+            return@LaunchedEffect
+        }
+        val left = vm.projectEntityForCompare(ids.first)
+        val right = vm.projectEntityForCompare(ids.second)
+        comparePair = if (left != null && right != null) left to right else null
     }
 
     fun toggleSelection(id: Long) {
@@ -420,7 +445,12 @@ fun ProjectLibraryScreen(
                     vm.setFavProjects(selectedProjects.map { it.id }, !allSelectedFav)
                 },
                 onAlbum = { batchAlbumOpen = true },
+                onCompare = {
+                    val ids = selectedProjects.map { it.id }
+                    if (ids.size == 2) compareIds = ids[0] to ids[1]
+                },
                 onDelete = { batchDeleteOpen = true },
+                compareEnabled = selectedProjects.size == 2,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth(),
@@ -522,6 +552,19 @@ fun ProjectLibraryScreen(
             onConfirm = { album ->
                 vm.setAlbumProjects(selectedProjects.map { it.id }, album)
                 batchAlbumOpen = false
+            },
+        )
+    }
+
+    comparePair?.let { (left, right) ->
+        ProjectCompareDialog(
+            left = left,
+            right = right,
+            paletteLabel = { brand -> paletteLabels[brand] ?: brand },
+            onDismiss = { compareIds = null },
+            onDelete = { target ->
+                vm.deleteProjects(listOf(target.id))
+                exitSelection()
             },
         )
     }
@@ -696,7 +739,9 @@ private fun SelectionActionBar(
     favorite: Boolean,
     onFav: () -> Unit,
     onAlbum: () -> Unit,
+    onCompare: () -> Unit,
     onDelete: () -> Unit,
+    compareEnabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
     if (count == 0) return
@@ -729,6 +774,14 @@ private fun SelectionActionBar(
             onClick = onAlbum,
             modifier = Modifier.weight(1f),
         )
+        // 恰选两张才能对比：少于两张置灰，避免点了没反应还以为是 bug
+        SelectionAction(
+            icon = MorphIcons.SwapHorizontal,
+            label = "对比",
+            onClick = onCompare,
+            enabled = compareEnabled,
+            modifier = Modifier.weight(1f),
+        )
         SelectionAction(
             icon = MorphIcons.Trash,
             label = "删除",
@@ -746,14 +799,20 @@ private fun SelectionAction(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     danger: Boolean = false,
+    enabled: Boolean = true,
 ) {
-    val tint = if (danger) MaterialTheme.colorScheme.error else ClayColors.BodyStrong
+    val tint = when {
+        !enabled -> ClayColors.MutedSoft
+        danger -> MaterialTheme.colorScheme.error
+        else -> ClayColors.BodyStrong
+    }
     val interaction = remember { MutableInteractionSource() }
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(11.dp))
             .pressScale(interaction, pressedScale = 0.94f)
             .clickable(
+                enabled = enabled,
                 interactionSource = interaction,
                 indication = LocalIndication.current,
                 onClick = onClick,
@@ -1336,6 +1395,148 @@ private fun BeadDot(color: Color) {
             modifier = Modifier
                 .size(10.dp)
                 .background(Color.White.copy(alpha = 0.9f), RoundedCornerShape(3.dp)),
+        )
+    }
+}
+
+/**
+ * 两张图纸并排对比：缩略图 + 9 行指标，值不同的行高亮。
+ * 对比完直接删掉不想要的那张——这才是用户选两份进来的真实目的。
+ */
+@Composable
+private fun ProjectCompareDialog(
+    left: ProjectEntity,
+    right: ProjectEntity,
+    paletteLabel: (String) -> String,
+    onDismiss: () -> Unit,
+    onDelete: (ProjectEntity) -> Unit,
+) {
+    var pendingDelete by remember { mutableStateOf<ProjectEntity?>(null) }
+    val rows = remember(left, right) { ProjectStats.rows(left, right, paletteLabel) }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = ClayColors.SurfaceCard,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 24.dp),
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "对比图纸",
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(MorphIcons.X, contentDescription = "关闭对比")
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    CompareThumbColumn(left, Modifier.weight(1f))
+                    CompareThumbColumn(right, Modifier.weight(1f))
+                }
+                HorizontalDivider(thickness = 1.dp, color = ClayColors.HairlineSoft)
+                rows.forEach { row ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                if (row.differs) ClayColors.Primary.copy(alpha = 0.07f)
+                                else Color.Transparent,
+                            )
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            row.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ClayColors.Muted,
+                            modifier = Modifier.weight(0.85f),
+                        )
+                        Text(
+                            row.left,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = if (row.differs) FontWeight.SemiBold else FontWeight.Normal,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            row.right,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = if (row.differs) FontWeight.SemiBold else FontWeight.Normal,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                    TextButton(
+                        onClick = { pendingDelete = left },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("删左侧", color = MaterialTheme.colorScheme.error)
+                    }
+                    TextButton(
+                        onClick = { pendingDelete = right },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("删右侧", color = MaterialTheme.colorScheme.error)
+                    }
+                    Button(onClick = onDismiss, modifier = Modifier.weight(1f)) {
+                        Text("关闭")
+                    }
+                }
+            }
+        }
+    }
+    pendingDelete?.let { target ->
+        DeleteProjectDialog(
+            title = "删除「${target.name}」？",
+            message = "会从项目库移除，缩略图和图层工程一并清理；10 秒内可从底部提示撤销。",
+            onDismiss = { pendingDelete = null },
+            onConfirm = {
+                pendingDelete = null
+                onDelete(target)
+            },
+        )
+    }
+}
+
+@Composable
+private fun CompareThumbColumn(entity: ProjectEntity, modifier: Modifier) {
+    val thumb by produceState<ImageBitmap?>(null, entity.thumbnailPath, entity.updatedAt) {
+        value = ThumbnailCache.load(entity.thumbnailPath, entity.updatedAt)
+    }
+    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(RoundedCornerShape(10.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center,
+        ) {
+            thumb?.let {
+                Image(
+                    bitmap = it,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit,
+                )
+            }
+        }
+        Text(
+            entity.name,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 6.dp),
         )
     }
 }

@@ -35,10 +35,12 @@ import com.pindou.app.core.pattern.ColorLabelLayout
 import com.pindou.app.core.studio.StudioEngine
 import com.pindou.app.ui.theme.ClayColors
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /** 画布变换。字段是 Compose state，捏合/平移才会触发重绘。 */
 class StudioCanvasState {
@@ -669,6 +671,25 @@ fun StudioCanvas(
                 val cy = origin.y + engine.height * cell / 2f
                 drawLine(Color(0xFFE05B8A), Offset(cx, origin.y), Offset(cx, origin.y + engine.height * cell), 1.5f)
                 drawLine(Color(0xFFE05B8A), Offset(origin.x, cy), Offset(origin.x + engine.width * cell, cy), 1.5f)
+            }
+            SymmetryMode.ROTATE_4, SymmetryMode.ROTATE_6, SymmetryMode.ROTATE_8 -> {
+                // n 条过中心的等角线：让用户一眼确认旋转中心和份数
+                val cx = origin.x + engine.width * cell / 2f
+                val cy = origin.y + engine.height * cell / 2f
+                val radius = max(engine.width, engine.height) * cell
+                val n = session.symmetry.rotateCount
+                for (k in 0 until n) {
+                    // 每 180/n 度一条轴：n 份旋转有 n 条对称轴（0/180 是同一条线）
+                    val angle = (Math.PI * k / n).toFloat()
+                    val dx = cos(angle) * radius
+                    val dy = sin(angle) * radius
+                    drawLine(
+                        Color(0xFFE05B8A).copy(alpha = 0.75f),
+                        Offset(cx - dx, cy - dy),
+                        Offset(cx + dx, cy + dy),
+                        1.2f,
+                    )
+                }
             }
         }
 

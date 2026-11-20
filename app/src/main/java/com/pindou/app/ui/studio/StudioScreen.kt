@@ -439,13 +439,10 @@ fun StudioScreen(vm: AppViewModel) {
                     SmallChip("选区设置…", false) { panel = StudioPanel.FILL }
                 }
                 else -> {
-                    SmallChip("对称：${session.symmetry.label}", session.symmetry != SymmetryMode.NONE) {
-                        session.symmetry = when (session.symmetry) {
-                            SymmetryMode.NONE -> SymmetryMode.HORIZONTAL
-                            SymmetryMode.HORIZONTAL -> SymmetryMode.VERTICAL
-                            SymmetryMode.VERTICAL -> SymmetryMode.BOTH
-                            SymmetryMode.BOTH -> SymmetryMode.NONE
-                        }
+                        SmallChip("对称：${session.symmetry.label}", session.symmetry != SymmetryMode.NONE) {
+                        // 顺序循环全部模式（含旋转 4/6/8），枚举加档不用改这里
+                        val modes = SymmetryMode.entries
+                        session.symmetry = modes[(session.symmetry.ordinal + 1) % modes.size]
                     }
                     SmallChip("网格", session.showGrid) { session.showGrid = !session.showGrid }
                     SmallChip("色号", session.showCodes) { session.showCodes = !session.showCodes }

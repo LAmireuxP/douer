@@ -19,6 +19,7 @@ import com.pindou.app.core.build.ConstructionResumePlan
 import com.pindou.app.core.build.BuildTimer
 import com.pindou.app.core.data.GridCodec
 import com.pindou.app.core.data.ProjectSummary
+import com.pindou.app.core.data.ProjectEntity
 import com.pindou.app.core.data.ProjectRepository
 import com.pindou.app.core.data.SettingsStore
 import com.pindou.app.core.editor.EditorEngine
@@ -1303,6 +1304,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 打开已有项目（进入编辑器继续修改） */
     fun openProject(summary: ProjectSummary) {
+        // 对比页要完整实体（cells / doneCells），这里单独开一个只读入口，不动打开流程
+        openProjectInternal(summary)
+    }
+
+    /** 图纸对比：按 id 取完整实体（只读，不改任何会话状态） */
+    suspend fun projectEntityForCompare(id: Long): ProjectEntity? = repository.get(id)
+
+    private fun openProjectInternal(summary: ProjectSummary) {
         cancelGeneration()
         viewModelScope.launch {
             try {
