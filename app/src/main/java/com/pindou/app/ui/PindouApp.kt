@@ -576,27 +576,26 @@ private fun GlassBottomBar(
                 shape = { shape },
                 effects = {
                     vibrancy()
-                    blur(glass.blurDp.dp.toPx())
+                    // 中间保持清晰：整体模糊压到用户设定的 ~28%
+                    blur((glass.blurDp * 0.28f).dp.toPx())
+                    // 厚玻璃：边缘折射加高加宽，靠近边界的背景被弯折/轻微放大
                     lens(
-                        refractionHeight = (glass.refractionDp * 0.54f).dp.toPx(),
-                        refractionAmount = glass.refractionDp.dp.toPx(),
+                        refractionHeight = 26.dp.toPx(),
+                        refractionAmount = (glass.refractionDp * 1.7f).dp.toPx(),
                         depthEffect = true,
-                        chromaticAberration = glass.chromatic,
+                        chromaticAberration = true,
                     )
                 },
                 highlight = {
+                    // 细高光：0.8dp、几乎不透的亮边，只在轮廓上出现
                     Highlight(
-                        width = 1.dp,
-                        blurRadius = 0.5.dp,
-                        alpha = if (dark) 0.95f else 0.90f,
+                        width = 0.8.dp,
+                        blurRadius = 0.35.dp,
+                        alpha = if (dark) 0.98f else 0.95f,
                         style = HighlightStyle.Default(
-                            intensity = if (dark) {
-                                (glass.highlight * 0.78f).coerceIn(0f, 1f)
-                            } else {
-                                glass.highlight
-                            },
+                            intensity = (glass.highlight * 1.05f).coerceIn(0f, 1f),
                             angle = 45f,
-                            falloff = 1.1f,
+                            falloff = 0.95f,
                         ),
                     )
                 },
