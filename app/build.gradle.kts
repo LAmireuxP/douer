@@ -24,8 +24,8 @@ android {
         applicationId = "com.pindou.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 22
-        versionName = "1.3.2"
+        versionCode = 23
+        versionName = "1.3.3"
         // 显式声明 instrumented test runner；AGP 默认同值，但写出来可避免
         // 未来插件升级改变默认值导致 MigrationTest 静默找不到 runner。
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
