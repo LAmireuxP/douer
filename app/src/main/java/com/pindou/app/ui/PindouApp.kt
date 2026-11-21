@@ -661,30 +661,33 @@ private fun GlassBottomBar(
                         shape = { RoundedCornerShape(26.dp) },
                         effects = {
                             vibrancy()
-                            blur(4.dp.toPx())
+                            // 和底栏同一套厚玻璃：中间清晰、边缘折射
+                            blur((glass.blurDp * 0.22f).dp.toPx())
                             lens(
-                                refractionHeight = 8.dp.toPx(),
-                                refractionAmount = 16.dp.toPx(),
+                                refractionHeight = 18.dp.toPx(),
+                                refractionAmount = (glass.refractionDp * 1.3f).dp.toPx(),
                                 depthEffect = true,
+                                chromaticAberration = true,
                             )
                         },
                         highlight = {
                             Highlight(
-                                width = 0.8.dp,
-                                alpha = if (dark) 0.55f else 0.75f,
+                                width = 0.7.dp,
+                                blurRadius = 0.3.dp,
+                                alpha = if (dark) 0.90f else 0.95f,
                                 style = HighlightStyle.Default(
-                                    intensity = if (dark) 0.40f else 0.55f,
+                                    intensity = if (dark) 0.75f else 0.85f,
                                     angle = 45f,
-                                    falloff = 1.2f,
+                                    falloff = 0.95f,
                                 ),
                             )
                         },
                         shadow = null,
                         innerShadow = {
                             InnerShadow(
-                                radius = 5.dp,
+                                radius = 4.dp,
                                 offset = DpOffset(0.dp, 1.dp),
-                                color = Color.White.copy(alpha = if (dark) 0.12f else 0.40f),
+                                color = Color.White.copy(alpha = if (dark) 0.16f else 0.50f),
                             )
                         },
                         onDrawSurface = {
