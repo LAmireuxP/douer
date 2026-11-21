@@ -30,4 +30,10 @@ class ScreenOrderTest {
         assertTrue(ScreenOrder.isForward(Screen.EDITOR, Screen.STUDIO))
         assertTrue(ScreenOrder.isForward(Screen.PREVIEW, Screen.CONSTRUCTION))
     }
+
+    @Test
+    fun `同屏不产生方向`() {
+        assertFalse(ScreenOrder.isForward(Screen.PREVIEW, Screen.PREVIEW))
+        assertFalse(ScreenOrder.isForward(Screen.HOME, Screen.HOME))
+    }
 }

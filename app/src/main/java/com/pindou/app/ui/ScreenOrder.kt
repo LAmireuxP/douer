@@ -22,6 +22,9 @@ object ScreenOrder {
         -> DETAIL
     }
 
-    /** 同层或更深 = 前进（右滑入），更浅 = 后退 */
-    fun isForward(from: Screen, to: Screen): Boolean = rank(to) >= rank(from)
+    /** 同层或更深 = 前进（右滑入），更浅 = 后退；同屏不产生方向（防御） */
+    fun isForward(from: Screen, to: Screen): Boolean {
+        if (from == to) return false
+        return rank(to) >= rank(from)
+    }
 }

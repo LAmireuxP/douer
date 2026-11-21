@@ -9,6 +9,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
@@ -29,6 +30,8 @@ fun Modifier.shimmer(
 ): Modifier {
     if (!enabled || !LocalMotion.current.enabled) return this
     val transition = rememberInfiniteTransition(label = "shimmer")
+    // 颜色数组只依赖 highlight：提到 draw lambda 外，避免每帧重建 3 个 Color 装箱
+    val colors = remember(highlight) { listOf(Color.Transparent, highlight, Color.Transparent) }
     val phase by transition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
@@ -46,9 +49,7 @@ fun Modifier.shimmer(
         val x = -band + (width + band * 2f) * phase
         drawRect(
             Brush.linearGradient(
-                0f to Color.Transparent,
-                0.5f to highlight,
-                1f to Color.Transparent,
+                colors = colors,
                 start = Offset(x, 0f),
                 end = Offset(x + band, size.height * 0.6f),
             ),
