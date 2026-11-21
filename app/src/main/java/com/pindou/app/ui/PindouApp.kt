@@ -29,14 +29,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -71,7 +69,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -80,8 +77,6 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
@@ -91,6 +86,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
@@ -132,8 +128,6 @@ fun PindouApp(vm: AppViewModel) {
     val snackbarHostState = remember { SnackbarHostState() }
     val pendingUndo = vm.deleteUndo
     val appMotion = LocalMotion.current
-    // 拖动底栏时冻结 pager 自身的手势，避免「底栏驱动 + pager 惯性」双重滚动导致多跳一页
-    var barDragging by remember { mutableStateOf(false) }
     val homePager = rememberPagerState(initialPage = vm.homeTab.ordinal) {
         HomeTab.entries.size
     }
@@ -381,7 +375,6 @@ fun PindouApp(vm: AppViewModel) {
                             Screen.HOME -> HomeScreen(
                                 vm,
                                 pagerState = homePager,
-                                userScrollEnabled = !barDragging,
                                 onPickImage = ::pickImage,
                                 onPickPixel = ::pickPixelImage,
                                 onPickBpat = ::pickBpat,
@@ -429,7 +422,6 @@ fun PindouApp(vm: AppViewModel) {
                     ],
                     pagerState = homePager,
                     onSelect = { tab -> goToHomePage(tab.ordinal) },
-                    onDraggingChange = { barDragging = it },
                     modifier = Modifier,
                 )
             }
@@ -442,7 +434,6 @@ fun PindouApp(vm: AppViewModel) {
 private fun HomeScreen(
     vm: AppViewModel,
     pagerState: PagerState,
-    userScrollEnabled: Boolean = true,
     onPickImage: () -> Unit,
     onPickPixel: () -> Unit,
     onPickBpat: () -> Unit,
@@ -451,7 +442,7 @@ private fun HomeScreen(
     HorizontalPager(
         state = pagerState,
         modifier = Modifier.fillMaxSize(),
-        userScrollEnabled = userScrollEnabled && !vm.librarySelecting,
+        userScrollEnabled = !vm.librarySelecting,
         key = { page -> HomeTab.entries[page] },
     ) { page ->
         when (HomeTab.entries[page]) {
@@ -491,33 +482,18 @@ private fun GlassBottomBar(
     current: HomeTab,
     pagerState: PagerState,
     onSelect: (HomeTab) -> Unit,
-    onDraggingChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
     var barPressed by remember { mutableStateOf(false) }
-    // 手指按住底栏任意位置（含轻点 tab，不经过拖动阈值）时整条玻璃一起下压
-    var barTouched by remember { mutableStateOf(false) }
-    val pressedVisual = barTouched || barPressed
     // 底栏拖拽的"手指位移"（单位：页）。offsetFraction 在拖拽期间读不到时，
     // 靠它保证胶囊仍然跟手；松手吸附时归零。
     var dragVisual by remember { mutableFloatStateOf(0f) }
-    // 拖拽起点页：pager 的 currentPage 会在半页处跳变，结算必须从起点算，
-    // 否则会被算成「1 + 拖动量」而多跳一页。
-    var dragStartPage by remember { mutableIntStateOf(0) }
-    // 按压层：按下 90ms 淡入；松手至少留 140ms 再淡出，轻点也能看见一下
-    val press = remember { Animatable(0f) }
-    val pressAlpha = press.value
-    LaunchedEffect(pressedVisual) {
-        if (pressedVisual) {
-            press.animateTo(1f, tween(90))
-        } else {
-            delay(140)
-            press.animateTo(0f, tween(220))
-        }
-    }
-    // 手指在底栏里的 x（px）：没拖动时按压段跟手指，拖动时跟胶囊
-    var pressX by remember { mutableFloatStateOf(0f) }
+    val pillScale by animateFloatAsState(
+        targetValue = if (barPressed) 0.94f else 1f,
+        animationSpec = tween(Motion.FAST),
+        label = "pillPress",
+    )
     // 拖动经过 tab 时，子项的 clickable 也可能收到一次 up；
     // 用 250ms 时间闸门吞掉这次误点，正常轻点不受影响。
     val clickGate = remember { LongArray(1) }
@@ -530,66 +506,43 @@ private fun GlassBottomBar(
     val glassTint = if (dark) Color(0xFF0A1117) else Color.White
     val alphas = glass.surfaceAlphas(dark)
 
-    BoxWithConstraints(
+    Box(
         modifier = modifier
             .navigationBarsPadding()
             .padding(horizontal = 20.dp, vertical = 10.dp)
             .widthIn(max = 372.dp)
             .fillMaxWidth()
             .height(64.dp)
-            .pointerInput(Unit) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    pressX = down.position.x
-                    barTouched = true
-                    try {
-                        waitForUpOrCancellation()
-                    } finally {
-                        barTouched = false
-                    }
-                }
-            }
+            // 拖动底栏 = 拖动胶囊：pager 偏移跟手走，标题/页面同步移动；
+            // 松手吸附到最近一页。和子项的 clickable 共存：没过 touch slop 的轻点仍是点 tab。
             .pointerInput(Unit) {
                 var drag = 0f
                 detectHorizontalDragGestures(
                     onDragStart = {
                         drag = 0f
                         dragVisual = 0f
-                        dragStartPage = pagerState.currentPage
                         barPressed = true
-                        onDraggingChange(true)
                     },
                     onDragCancel = {
                         drag = 0f
                         dragVisual = 0f
                         barPressed = false
-                        onDraggingChange(false)
                     },
                     onHorizontalDrag = { change, amount ->
                         drag += amount
-                        pressX = change.position.x
                         change.consume()
-                        // 底栏一个槽宽 = 一页：手指走一格，页面正好走完一页，
-                        // 胶囊（1:1 跟手）和页面才会同时到位；直接按 px 推会只走 1/3 页。
+                        // 直接推进 pager 的原始偏移：胶囊与页面同一帧跟手，不等松手
+                        pagerState.dispatchRawDelta(amount)
                         val slotPx = size.width.toFloat() / Tabs.size
-                        val viewport = pagerState.layoutInfo.viewportSize.width
-                        if (slotPx > 0f && viewport > 0) {
-                            val pageDelta = amount * viewport / slotPx
-                            pagerState.dispatchRawDelta(pageDelta)
-                            // 胶囊按手指位移走，并夹在当前页的边界内：到边时不脱手
-                            val min = -dragStartPage.toFloat()
-                            val max = (Tabs.size - 1 - dragStartPage).toFloat()
-                            dragVisual = (dragVisual + amount / slotPx).coerceIn(min, max)
-                        }
+                        if (slotPx > 0f) dragVisual += amount / slotPx
                     },
                     onDragEnd = {
                         barPressed = false
-                        onDraggingChange(false)
                         if (abs(drag) > 8f) {
                             // 只在真的拖动时落闸；轻点不能吞掉下一拍点击
                             clickGate[0] = SystemClock.uptimeMillis() + 250L
                         }
-                        val target = (dragStartPage + dragVisual)
+                        val target = (pagerState.currentPage + pagerState.currentPageOffsetFraction)
                             .roundToInt()
                             .coerceIn(0, Tabs.size - 1)
                         scope.launch { pagerState.animateScrollToPage(target) }
@@ -597,16 +550,7 @@ private fun GlassBottomBar(
                         drag = 0f
                     },
                 )
-            },
-    ) {
-        // 与内层 BoxWithConstraints 的 6dp 内边距对齐，否则图标槽位和胶囊会错位
-        val slot = (maxWidth - 12.dp) / Tabs.size
-        val dropletSlotPx = with(LocalDensity.current) { slot.toPx() }
-        Box(
-            Modifier
-                .fillMaxSize()
-            // 只读触摸态：不消费事件，子项的 clickable 照常工作
-
+            }
             .drawBackdrop(
                 backdrop = backdrop,
                 shape = { shape },
@@ -676,29 +620,10 @@ private fun GlassBottomBar(
             // 玻璃片直接跟 Pager 的 currentPage + offsetFraction 走。
             // 在组合阶段读：layout lambda 里读 offsetFraction 在拖拽时不触发重排，
             // 实测胶囊会停在旧页；这里宁可每帧重组这一个小条，也要跟手。
-            // 拖底栏时用 dragVisual（与 pager 实际滚动量一致），其余时候跟 pager 自己的偏移
             val pagePosition = (
-                (if (barPressed) dragStartPage + dragVisual else pagerState.currentPage.toFloat()) +
-                    (if (barPressed) 0f else pagerState.currentPageOffsetFraction)
+                pagerState.currentPage + pagerState.currentPageOffsetFraction + dragVisual
                 )
                 .coerceIn(0f, (Tabs.size - 1).toFloat())
-            // 局部按压：中性压深（不是蓝色高亮），位置跟手指；拖动时跟胶囊
-            val pillCenterPx = with(LocalDensity.current) { (slot * pagePosition + slot / 2).toPx() }
-            val slotPx = with(LocalDensity.current) { slot.toPx() }
-            // 只有按在胶囊那一段时胶囊才缩小；按别的段只压深那一段
-            val pillSlotStartPx = slotPx * pagePosition
-            val pillScale by animateFloatAsState(
-                targetValue = if (
-                    barPressed ||
-                    (barTouched && pressX in pillSlotStartPx..(pillSlotStartPx + slotPx))
-                ) {
-                    0.86f
-                } else {
-                    1f
-                },
-                animationSpec = tween(Motion.FAST),
-                label = "pillPress",
-            )
             Box(
                 Modifier
                     .offset(x = slot * pagePosition)
@@ -791,126 +716,67 @@ private fun GlassBottomBar(
                 }
             }
 
+            Row(
+                modifier = Modifier.fillMaxSize(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Tabs.forEach { tab ->
+                    val selected = current == tab.target
+                    val tint by animateColorAsState(
+                        targetValue = if (selected) selectedInk else idleInk,
+                        animationSpec = tween(Motion.FAST),
+                        label = "tabTint",
+                    )
+                    val interaction = remember { MutableInteractionSource() }
+                    val pressed by interaction.collectIsPressedAsState()
+                    val pressedFill by animateColorAsState(
+                        targetValue = if (pressed) {
+                            accent.copy(alpha = if (dark) 0.16f else 0.10f)
+                        } else {
+                            Color.Transparent
+                        },
+                        animationSpec = tween(Motion.FAST / 2),
+                        label = "tabPressedFill",
+                    )
 
-
-        }
-    }
-
-        // 酷安式液滴：比底栏更高更大的折射玻璃珠，允许溢出底栏边界
-        if (pressAlpha > 0.01f) {
-            val dropletWidthPx = dropletSlotPx * 1.35f
-            // 靠边时液滴往中间收，不探出底栏两端（酷安同款）
-            val barWidthPx = with(LocalDensity.current) { maxWidth.toPx() }
-            val halfDroplet = dropletWidthPx / 2f
-            val dropletCenterX = pressX.coerceIn(halfDroplet, barWidthPx - halfDroplet)
-            Box(
-                Modifier
-                    .offset {
-                        IntOffset(
-                            (dropletCenterX - halfDroplet).roundToInt(),
-                            -16.dp.roundToPx(),
+                    Column(
+                        modifier = Modifier
+                            .width(slot)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(pressedFill)
+                            .pressScale(interaction, pressedScale = 0.88f)
+                            .clickable(
+                                interactionSource = interaction,
+                                indication = null,
+                            ) {
+                                if (SystemClock.uptimeMillis() >= clickGate[0]) {
+                                    onSelect(tab.target)
+                                }
+                            },
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        AnimatedIconSwap(
+                            selected = selected,
+                            outlined = tab.outlined,
+                            filled = tab.filled,
+                            contentDescription = tab.label,
+                            tint = tint,
+                            size = 21.dp,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = tab.label,
+                            color = tint,
+                            fontSize = 10.sp,
+                            lineHeight = 12.sp,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
                         )
                     }
-                    .width(with(LocalDensity.current) { dropletWidthPx.toDp() })
-                    .height(96.dp)
-                    .graphicsLayer { alpha = pressAlpha }
-                    .drawBackdrop(
-                        backdrop = backdrop,
-                        shape = { RoundedCornerShape(48.dp) },
-                        effects = {
-                            // 不加 vibrancy：会把液滴刷成实心白，失去玻璃感
-                            blur(12.dp.toPx())
-                            lens(
-                                refractionHeight = 16.dp.toPx(),
-                                refractionAmount = 26.dp.toPx(),
-                                depthEffect = true,
-                                chromaticAberration = true,
-                            )
-                        },
-                        highlight = {
-                            Highlight(
-                                width = 1.2.dp,
-                                alpha = if (dark) 0.60f else 0.85f,
-                                style = HighlightStyle.Default(
-                                    intensity = 0.70f,
-                                    angle = 45f,
-                                    falloff = 1.1f,
-                                ),
-                            )
-                        },
-                        shadow = {
-                            Shadow(
-                                radius = 16.dp,
-                                offset = DpOffset(0.dp, 8.dp),
-                                color = Color.Black.copy(alpha = if (dark) 0.30f else 0.10f),
-                            )
-                        },
-                        innerShadow = {
-                            InnerShadow(
-                                radius = 6.dp,
-                                offset = DpOffset(0.dp, 1.dp),
-                                color = Color.White.copy(alpha = if (dark) 0.16f else 0.55f),
-                                alpha = 0.9f,
-                            )
-                        },
-                        onDrawSurface = {
-                            drawRect(Color.White.copy(alpha = if (dark) 0.03f else 0.04f))
-                        },
-                    ),
-            )
-        }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(64.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Tabs.forEach { tab ->
-                val selected = current == tab.target
-                val tint by animateColorAsState(
-                    targetValue = if (selected) selectedInk else idleInk,
-                    animationSpec = tween(Motion.FAST),
-                    label = "tabTint",
-                )
-                val interaction = remember { MutableInteractionSource() }
-
-                Column(
-                    modifier = Modifier
-                        .width(slot)
-                        .fillMaxHeight()
-                        .clip(RoundedCornerShape(24.dp))
-                        .pressScale(interaction, pressedScale = 0.88f)
-                        .clickable(
-                            interactionSource = interaction,
-                            indication = null,
-                        ) {
-                            if (SystemClock.uptimeMillis() >= clickGate[0]) {
-                                onSelect(tab.target)
-                            }
-                        },
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    AnimatedIconSwap(
-                        selected = selected,
-                        outlined = tab.outlined,
-                        filled = tab.filled,
-                        contentDescription = tab.label,
-                        tint = tint,
-                        size = 21.dp,
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = tab.label,
-                        color = tint,
-                        fontSize = 10.sp,
-                        lineHeight = 12.sp,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                    )
                 }
-            }
 
+            }
         }
     }
 }
